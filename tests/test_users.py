@@ -1,9 +1,40 @@
 import datetime as dt
 
 from app.extensions import db
-from app.encryption.passwords import hash_password
+from app.encryption.passwords import hash_password, verify_password
 from app.roles.models import Role, RoleType
+from app.sessions.models import Session
 from app.users.models import Project, User
+
+
+def test_user_can_reset_password_and_other_sessions_are_revoked(
+    api_client, manager_user, monkeypatch
+):
+    original_password_hash = manager_user.password_hash
+    monkeypatch.setattr("app.users.routes.send_password_changed_confirmation", lambda user: None)
+
+    status, _ = api_client.login(manager_user.email, "test-password")
+    assert status == 200
+    status, _ = api_client.login(manager_user.email, "test-password")
+    assert status == 200
+    assert Session.query.filter_by(user_id=manager_user.id, revoked_at=None).count() >= 2
+
+    status, body = api_client.post(
+        "/api/users/set-password",
+        {
+            "current_password": "test-password",
+            "new_password": "new-secure-password",
+            "new_password_confirm": "new-secure-password",
+        },
+    )
+
+    assert status == 200, body
+    assert body["message"] == "Password updated successfully."
+    assert Session.query.filter_by(user_id=manager_user.id, revoked_at=None).count() == 1
+    verify_password(manager_user.password_hash, "new-secure-password")
+
+    manager_user.password_hash = original_password_hash
+    db.session.commit()
 
 
 def test_deactivate_user_persists_and_returns_last_working_day(api_client, manager_user, employee_user):

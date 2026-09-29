@@ -384,9 +384,9 @@ class SetPassword(MethodView):
         user.first_login = False
         user.temp_password_expires_at = None
 
-        g.session.revoked_at = datetime.now(timezone.utc)
+        _revoke_active_sessions(user)
         db.session.commit()
         send_password_changed_confirmation(user)
 
         issue_session(user)
-        return {"status": 200, "message": "Password set successfully.", "data": {"user": user}}
+        return {"status": 200, "message": "Password updated successfully.", "data": {"user": user}}
