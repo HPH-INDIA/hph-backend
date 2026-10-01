@@ -473,9 +473,10 @@ def test_my_efficiency_endpoint_is_self_scoped(api_client, employee_user, manage
     assert body["data"]["daily"][0]["kaironCharts"] == 30
 
 
-def test_bulk_approve_skips_missing_and_non_pending():
+def test_bulk_approve_skips_missing_and_non_pending(lead_user):
     owner = _get_or_create_user("reports-bulk-owner1@example.com", "BulkOwner", "One", "TEST-RPT-BLK-1")
-    manager_id = _first_manager_id()
+    manager_id = lead_user.id
+    owner.reports_to_id = lead_user.id
 
     pending = upsert_own_record(owner.id, _manual_entry(record_date=dt.date(2026, 9, 1)))
     already_approved = upsert_own_record(owner.id, _manual_entry(record_date=dt.date(2026, 9, 2)))
@@ -492,9 +493,10 @@ def test_bulk_approve_skips_missing_and_non_pending():
     assert pending.reviewed_by_id == manager_id
 
 
-def test_bulk_reject_applies_a_reason_per_record():
+def test_bulk_reject_applies_a_reason_per_record(lead_user):
     owner = _get_or_create_user("reports-bulk-owner2@example.com", "BulkOwner", "Two", "TEST-RPT-BLK-2")
-    manager_id = _first_manager_id()
+    manager_id = lead_user.id
+    owner.reports_to_id = lead_user.id
 
     first = upsert_own_record(owner.id, _manual_entry(record_date=dt.date(2026, 9, 3)))
     second = upsert_own_record(owner.id, _manual_entry(record_date=dt.date(2026, 9, 4)))
@@ -966,7 +968,7 @@ def test_reports_manual_uses_server_side_pagination(api_client, employee_user):
     assert len(body["data"]["items"]) == 1
 
 
-def test_reports_reviews_and_bulk_endpoints_require_manager_role(api_client, employee_user):
+def test_reports_reviews_and_bulk_endpoints_reject_employee_role(api_client, employee_user):
     api_client.login("test-employee@example.com", "test-password")
 
     status, body = api_client.get("/api/reports/manual/reviews")
@@ -979,24 +981,24 @@ def test_reports_reviews_and_bulk_endpoints_require_manager_role(api_client, emp
     assert status == 403, body
 
 
-def test_bulk_approve_endpoint_approves_and_reports_skips(api_client, employee_user, manager_user):
+def test_bulk_approve_endpoint_approves_and_reports_skips(api_client, employee_user, lead_user):
     api_client.login("test-employee@example.com", "test-password")
     status, body = api_client.post("/api/manual-daily-records", _manual_entry_body(date="2026-09-14"))
     record_id = body["data"]["id"]
 
-    api_client.login("test-manager@example.com", "test-password")
+    api_client.login(lead_user.email, "test-password")
     status, body = api_client.post("/api/reports/manual/reviews/bulk-approve", {"ids": [record_id, 9999999]})
     assert status == 200, body
     assert body["data"]["approved"] == [record_id]
     assert body["data"]["skipped"][0]["id"] == 9999999
 
 
-def test_bulk_reject_endpoint_applies_reason_per_record(api_client, employee_user, manager_user):
+def test_bulk_reject_endpoint_applies_reason_per_record(api_client, employee_user, lead_user):
     api_client.login("test-employee@example.com", "test-password")
     status, body = api_client.post("/api/manual-daily-records", _manual_entry_body(date="2026-09-15"))
     record_id = body["data"]["id"]
 
-    api_client.login("test-manager@example.com", "test-password")
+    api_client.login(lead_user.email, "test-password")
     status, body = api_client.post(
         "/api/reports/manual/reviews/bulk-reject", {"items": [{"id": record_id, "reason": "hours look wrong"}]}
     )

@@ -23,14 +23,16 @@ from app.manual_daily_records.services import (
     build_manual_upload_template_xlsx,
     complete_manual_import,
     import_manual_daily_records,
+    manual_review_user_ids,
     process_manual_import_chunk,
     reject_record,
+    scope_manual_records,
     start_manual_import,
     upsert_own_record,
 )
 
 # Manual records belong to Reports. Manager/Lead/Employee roles with Reports
-# write may submit their own record; approving/rejecting remains Manager-only.
+# write may submit their own record; leads review their direct employees.
 REPORTS_FEATURE = "reports"
 
 
@@ -40,9 +42,7 @@ class ManualDailyRecords(MethodView):
     @bp.arguments(ManualDailyRecordQuerySchema, location="query")
     @bp.response(200, ManualDailyRecordListEnvelopeSchema)
     def get(self, args):
-        # Doubles as the manager's review queue (?status=pending) and as
-        # general reporting (§8) - same endpoint, different filter combo.
-        query = ManualDailyRecord.query
+        query = scope_manual_records(ManualDailyRecord.query, g.user)
         if args.get("from_date"):
             query = query.filter(ManualDailyRecord.record_date >= args["from_date"])
         if args.get("to_date"):
@@ -161,10 +161,13 @@ class ManualDailyRecordsImportComplete(MethodView):
 @bp.route("/manual-daily-records/<int:record_id>/approve")
 class ApproveManualDailyRecord(MethodView):
     @require_feature(REPORTS_FEATURE, access="write")
-    @require_role("manager")
+    @require_role("lead")
     @bp.response(200, ManualDailyRecordEnvelopeSchema)
     def post(self, record_id):
-        record = ManualDailyRecord.query.get_or_404(record_id)
+        record = ManualDailyRecord.query.filter(
+            ManualDailyRecord.id == record_id,
+            ManualDailyRecord.user_id.in_(manual_review_user_ids(g.user)),
+        ).first_or_404()
         if record.status != "pending":
             abort(409, message="This record isn't pending review.")
 
@@ -176,11 +179,14 @@ class ApproveManualDailyRecord(MethodView):
 @bp.route("/manual-daily-records/<int:record_id>/reject")
 class RejectManualDailyRecord(MethodView):
     @require_feature(REPORTS_FEATURE, access="write")
-    @require_role("manager")
+    @require_role("lead")
     @bp.arguments(RejectManualDailyRecordSchema)
     @bp.response(200, ManualDailyRecordEnvelopeSchema)
     def post(self, data, record_id):
-        record = ManualDailyRecord.query.get_or_404(record_id)
+        record = ManualDailyRecord.query.filter(
+            ManualDailyRecord.id == record_id,
+            ManualDailyRecord.user_id.in_(manual_review_user_ids(g.user)),
+        ).first_or_404()
         if record.status != "pending":
             abort(409, message="This record isn't pending review.")
 

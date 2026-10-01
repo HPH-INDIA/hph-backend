@@ -1,10 +1,18 @@
+from decimal import Decimal
+
 from marshmallow import Schema, ValidationError, fields, validate, validates_schema
 
-from app.manual_daily_records.models import MAX_HOURS_PER_FIELD, VALID_STATUSES
+from app.manual_daily_records.models import MAX_HOURS_PER_FIELD, VALID_MEETING_TYPES, VALID_STATUSES
 from app.responses import envelope_schema
 
 def _hour_field(**kwargs):
     return fields.Decimal(places=2, validate=validate.Range(min=0, max=MAX_HOURS_PER_FIELD), **kwargs)
+
+
+class ManualMeetingSchema(Schema):
+    type = fields.String(required=True, validate=validate.OneOf(VALID_MEETING_TYPES))
+    hours = fields.Decimal(required=True, as_string=True, places=2,
+                           validate=validate.Range(min=Decimal("0.01"), max=MAX_HOURS_PER_FIELD))
 
 
 class ManualDailyRecordUpsertSchema(Schema):
@@ -28,6 +36,11 @@ class ManualDailyRecordUpsertSchema(Schema):
     no_inventory_idle_time_hours = _hour_field(required=True, data_key="noInventoryIdleTimeHours")
     leave_hours = _hour_field(required=True, data_key="leaveHours")
     meeting_engagement_hours = _hour_field(required=True, data_key="meetingEngagementHours")
+    meeting_type = fields.String(
+        allow_none=True, validate=validate.OneOf(VALID_MEETING_TYPES), data_key="meetingType"
+    )
+    meetings = fields.List(fields.Nested(ManualMeetingSchema), required=False,
+                           validate=validate.Length(max=20))
 
     @validates_schema
     def derive_production_count(self, data, **kwargs):
@@ -48,6 +61,19 @@ class ManualDailyRecordUpsertSchema(Schema):
         data["foundation_count"] = foundation_count
         data["production_count"] = pvp_count + foundation_count
 
+        if "meetings" in data:
+            meetings = data["meetings"]
+            total = sum((meeting["hours"] for meeting in meetings), Decimal("0"))
+            if total > MAX_HOURS_PER_FIELD:
+                raise ValidationError("Total meeting hours cannot exceed 10.", field_name="meetings")
+            if total != data["meeting_engagement_hours"]:
+                raise ValidationError("Meeting hours must equal the sum of the meeting entries.",
+                                      field_name="meetingEngagementHours")
+            single_type = meetings[0]["type"] if len(meetings) == 1 else None
+            if "meeting_type" in data and data["meeting_type"] != single_type:
+                raise ValidationError("Meeting type must match the meeting entries.", field_name="meetingType")
+            data["meeting_type"] = single_type
+
 
 class ManualDailyRecordSchema(Schema):
     id = fields.Integer(dump_only=True)
@@ -62,12 +88,21 @@ class ManualDailyRecordSchema(Schema):
     )
     leave_hours = fields.Decimal(dump_only=True, as_string=True, data_key="leaveHours")
     meeting_engagement_hours = fields.Decimal(dump_only=True, as_string=True, data_key="meetingEngagementHours")
+    meeting_type = fields.String(dump_only=True, allow_none=True, data_key="meetingType")
+    meetings = fields.Method("get_meetings", dump_only=True)
     status = fields.String(dump_only=True)
     reviewed_by_id = fields.Integer(dump_only=True, allow_none=True, data_key="reviewedById")
     reviewed_at = fields.DateTime(dump_only=True, allow_none=True, data_key="reviewedAt")
     rejection_reason = fields.String(dump_only=True, allow_none=True, data_key="rejectionReason")
     created_at = fields.DateTime(dump_only=True, data_key="createdAt")
     updated_at = fields.DateTime(dump_only=True, data_key="updatedAt")
+
+    def get_meetings(self, record):
+        if record.meetings is not None:
+            return record.meetings
+        if record.meeting_engagement_hours and record.meeting_engagement_hours > 0:
+            return [{"type": record.meeting_type, "hours": str(record.meeting_engagement_hours)}]
+        return []
 
 
 class ManualDailyRecordQuerySchema(Schema):

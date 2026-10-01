@@ -186,6 +186,34 @@ def manager_user(app):
     return user
 
 
+@pytest.fixture
+def lead_user(app, employee_user, manager_user):
+    role_type = RoleType.query.filter_by(code="lead").one()
+    role = Role.query.filter_by(role_type_id=role_type.id).first()
+    user = User.query.filter_by(email="test-lead@example.com").first()
+    if user is None:
+        user = User(
+            email="test-lead@example.com",
+            first_name="Test",
+            last_name="Lead",
+            emp_id="TEST-LEAD",
+            role_id=role.id,
+            project_id=manager_user.project_id,
+            reports_to_id=manager_user.id,
+            password_hash=hash_password("test-password"),
+            first_login=False,
+            is_active=True,
+        )
+        db.session.add(user)
+        db.session.flush()
+    previous_lead_id = employee_user.reports_to_id
+    employee_user.reports_to_id = user.id
+    db.session.commit()
+    yield user
+    employee_user.reports_to_id = previous_lead_id
+    db.session.commit()
+
+
 class ApiClient:
     """Wraps the Flask test client with this app's payload encryption
     (§4b) - every request/response body is AES-GCM encrypted end to end

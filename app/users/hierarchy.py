@@ -16,6 +16,20 @@ def can_manage_role_type(actor_role_type_code, target_role_type_code):
     return target_role_type_code in CAN_MANAGE_ROLE_TYPE.get(actor_role_type_code, set())
 
 
+def lead_employee_user_ids(lead_id):
+    """Employees reporting directly to a lead, including historical members."""
+    from app.roles.models import Role, RoleType
+    from app.users.models import User
+
+    return [
+        user.id
+        for user in User.query.join(Role).join(RoleType).filter(
+            User.reports_to_id == lead_id,
+            RoleType.code == "employee",
+        )
+    ]
+
+
 def manager_team_user_ids(manager_id):
     """Return a manager's leads and employees.
 

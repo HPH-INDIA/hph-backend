@@ -2,7 +2,9 @@ import base64
 import datetime as dt
 from io import BytesIO
 
+import pytest
 from openpyxl import Workbook, load_workbook
+from sqlalchemy.exc import IntegrityError
 
 from app.encryption.passwords import hash_password
 from app.extensions import db
@@ -60,6 +62,68 @@ def _entry_body(**overrides):
     }
     body.update(overrides)
     return body
+
+
+def test_multiple_meetings_round_trip_and_replace_on_edit(api_client, employee_user):
+    api_client.login(employee_user.email, "test-password")
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(
+        meetingEngagementHours=1.25,
+        meetings=[{"type": "Assessment", "hours": 0.5}, {"type": "Huddle", "hours": 0.75}],
+    ))
+    assert status == 200
+    saved = body["data"]
+    assert saved["meetingEngagementHours"] == "1.25"
+    assert saved["meetingType"] is None
+    assert saved["meetings"] == [
+        {"type": "Assessment", "hours": "0.50"},
+        {"type": "Huddle", "hours": "0.75"},
+    ]
+    assert ManualDailyRecord.query.filter_by(user_id=employee_user.id).count() == 1
+
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(
+        meetingEngagementHours=0.5,
+        meetings=[{"type": "Training", "hours": 0.5}],
+    ))
+    assert status == 200
+    assert body["data"]["id"] == saved["id"]
+    assert body["data"]["meetingType"] == "Training"
+    assert body["data"]["meetings"] == [{"type": "Training", "hours": "0.50"}]
+
+
+@pytest.mark.parametrize("meeting_hours,meetings", [
+    (0.5, [{"type": "Huddle", "hours": 0}]),
+    (0.5, [{"type": "Unknown", "hours": 0.5}]),
+    (1, [{"type": "Huddle", "hours": 0.5}]),
+    (10, [{"type": "Huddle", "hours": 6}, {"type": "Training", "hours": 5}]),
+])
+def test_invalid_meetings_reject_without_changing_record(api_client, employee_user, meeting_hours, meetings):
+    api_client.login(employee_user.email, "test-password")
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(
+        meetingEngagementHours=0.25, meetingType="PKT",
+    ))
+    assert status == 200
+    record_id = body["data"]["id"]
+    status, _ = api_client.post("/api/manual-daily-records", _entry_body(
+        meetingEngagementHours=meeting_hours, meetings=meetings,
+    ))
+    assert status == 422
+    record = db.session.get(ManualDailyRecord, record_id)
+    assert record.meeting_engagement_hours == 0.25
+    assert record.meeting_type == "PKT"
+
+
+def test_legacy_meeting_hours_remain_visible_and_single_meeting_save_works(api_client, employee_user):
+    api_client.login(employee_user.email, "test-password")
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(
+        meetingEngagementHours=0.25, meetingType=None,
+    ))
+    assert status == 200
+    assert body["data"]["meetings"] == [{"type": None, "hours": "0.25"}]
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(
+        meetingEngagementHours=0.5, meetingType="Meeting",
+    ))
+    assert status == 200
+    assert body["data"]["meetings"] == [{"type": "Meeting", "hours": "0.50"}]
 
 
 def _bulk_workbook(rows):
@@ -179,6 +243,7 @@ def test_employee_can_self_enter_and_edit_own_record(api_client, employee_user):
     assert body["data"]["userId"] == employee_user.id
     assert body["data"]["status"] == "pending"
     assert body["data"]["productionCount"] == 12
+    assert body["data"]["meetingType"] is None
 
     status, body = api_client.post("/api/manual-daily-records", _entry_body(productionCount=30))
     assert status == 200, body
@@ -188,6 +253,65 @@ def test_employee_can_self_enter_and_edit_own_record(api_client, employee_user):
     assert status == 200, body
     assert len(body["data"]) == 1
     assert body["data"][0]["productionCount"] == 30
+
+
+@pytest.mark.parametrize("meeting_type", ["Assessment", "One-O-One", "Meeting", "Training", "Huddle", "PKT", "Others"])
+def test_meeting_type_round_trips_in_save_and_listing(api_client, employee_user, meeting_type):
+    api_client.login(employee_user.email, "test-password")
+
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(meetingType=meeting_type))
+
+    assert status == 200, body
+    assert body["data"]["meetingType"] == meeting_type
+    record = db.session.get(ManualDailyRecord, body["data"]["id"])
+    assert record.meeting_type == meeting_type
+
+    status, body = api_client.get(f"/api/manual-daily-records?userId={employee_user.id}")
+    assert status == 200, body
+    assert len(body["data"]) == 1
+    assert body["data"][0]["meetingType"] == meeting_type
+
+
+def test_meeting_type_can_be_updated_preserved_when_omitted_and_cleared(api_client, employee_user):
+    api_client.login(employee_user.email, "test-password")
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(meetingType="Assessment"))
+    assert status == 200, body
+    record_id = body["data"]["id"]
+
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(meetingType="Training"))
+    assert status == 200, body
+    assert body["data"]["id"] == record_id
+    assert body["data"]["meetingType"] == "Training"
+
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(productionCount=23))
+    assert status == 200, body
+    assert body["data"]["meetingType"] == "Training"
+    assert body["data"]["productionCount"] == 23
+
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(meetingType=None))
+    assert status == 200, body
+    assert body["data"]["id"] == record_id
+    assert body["data"]["meetingType"] is None
+    assert db.session.get(ManualDailyRecord, record_id).meeting_type is None
+    assert ManualDailyRecord.query.filter_by(user_id=employee_user.id).count() == 1
+
+
+@pytest.mark.parametrize("meeting_type", ["Unknown", "meeting", "One-on-One", "", 123])
+def test_invalid_meeting_type_rejects_without_changing_existing_record(api_client, employee_user, meeting_type):
+    record = upsert_own_record(employee_user.id, _entry(meeting_type="Huddle"))
+    api_client.login(employee_user.email, "test-password")
+
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(meetingType=meeting_type))
+
+    assert status == 422, body
+    assert db.session.get(ManualDailyRecord, record.id).meeting_type == "Huddle"
+
+
+def test_database_rejects_invalid_meeting_type(employee_user):
+    with pytest.raises(IntegrityError):
+        upsert_own_record(employee_user.id, _entry(meeting_type="Unknown"))
+    db.session.rollback()
+    assert ManualDailyRecord.query.filter_by(user_id=employee_user.id).count() == 0
 
 
 def test_program_counts_are_added_into_production_total(api_client, employee_user):
@@ -227,28 +351,28 @@ def test_non_manager_cannot_approve_or_reject(api_client, employee_user):
     assert status == 403, body
 
 
-def test_manager_can_approve_pending_record(api_client, employee_user, manager_user):
+def test_direct_lead_can_approve_pending_record(api_client, employee_user, lead_user):
     api_client.login("test-employee@example.com", "test-password")
     status, body = api_client.post("/api/manual-daily-records", _entry_body())
     record_id = body["data"]["id"]
 
-    api_client.login("test-manager@example.com", "test-password")
+    api_client.login(lead_user.email, "test-password")
     status, body = api_client.post(f"/api/manual-daily-records/{record_id}/approve")
     assert status == 200, body
     assert body["data"]["status"] == "approved"
-    assert body["data"]["reviewedById"] == manager_user.id
+    assert body["data"]["reviewedById"] == lead_user.id
 
     # Already reviewed - a second decision is rejected outright.
     status, body = api_client.post(f"/api/manual-daily-records/{record_id}/reject", {"reason": "too late"})
     assert status == 409, body
 
 
-def test_manager_can_reject_pending_record_with_reason(api_client, employee_user, manager_user):
+def test_direct_lead_can_reject_pending_record_with_reason(api_client, employee_user, lead_user):
     api_client.login("test-employee@example.com", "test-password")
     status, body = api_client.post("/api/manual-daily-records", _entry_body())
     record_id = body["data"]["id"]
 
-    api_client.login("test-manager@example.com", "test-password")
+    api_client.login(lead_user.email, "test-password")
     status, body = api_client.post(
         f"/api/manual-daily-records/{record_id}/reject", {"reason": "hours look wrong"}
     )
@@ -258,8 +382,8 @@ def test_manager_can_reject_pending_record_with_reason(api_client, employee_user
 
 
 def test_query_filters_by_user_ids_and_excludes(api_client, manager_user):
-    user_a = _get_or_create_user("mdr-a@example.com", "Alpha", "User", "TEST-MDR-A")
-    user_b = _get_or_create_user("mdr-b@example.com", "Beta", "User", "TEST-MDR-B")
+    user_a = _manager_team_member(manager_user, "filter-a")
+    user_b = _manager_team_member(manager_user, "filter-b")
     upsert_own_record(user_a.id, _entry(record_date=dt.date(2026, 9, 11)))
     upsert_own_record(user_b.id, _entry(record_date=dt.date(2026, 9, 11)))
 
@@ -349,7 +473,7 @@ def test_chunked_manual_import_updates_only_changed_user_day(api_client, manager
     employee = _manager_team_member(manager_user, "changed")
     upsert_own_record(
         employee.id,
-        _entry(record_date=dt.date(2026, 9, 18), production_count=18),
+        _entry(record_date=dt.date(2026, 9, 18), production_count=18, meeting_type="PKT"),
     )
     api_client.login(manager_user.email, "test-password")
     rows = [_import_row(employee, production=27)]
@@ -367,6 +491,7 @@ def test_chunked_manual_import_updates_only_changed_user_day(api_client, manager
     ).one()
     assert record.production_count == 27
     assert record.status == "pending"
+    assert record.meeting_type == "PKT"
 
 
 def test_manager_bulk_upload_creates_and_updates_team_records(api_client, manager_user):
@@ -388,6 +513,10 @@ def test_manager_bulk_upload_creates_and_updates_team_records(api_client, manage
     assert record.production_count == 18
     assert record.pvp_count == 18
     assert record.foundation_count == 0
+    assert record.meeting_type is None
+
+    record.meeting_type = "One-O-One"
+    db.session.commit()
 
     updated_payload = _bulk_workbook(
         [[employee.email.upper(), f"{employee.first_name} {employee.last_name}", 22, 0, 1, 0, 0.25, 0]]
@@ -400,6 +529,7 @@ def test_manager_bulk_upload_creates_and_updates_team_records(api_client, manage
     assert body["data"]["updatedCount"] == 1
     assert ManualDailyRecord.query.filter_by(user_id=employee.id, record_date=dt.date(2026, 9, 18)).count() == 1
     assert ManualDailyRecord.query.filter_by(user_id=employee.id, record_date=dt.date(2026, 9, 18)).one().production_count == 22
+    assert ManualDailyRecord.query.filter_by(user_id=employee.id, record_date=dt.date(2026, 9, 18)).one().meeting_type == "One-O-One"
 
 
 def test_bulk_upload_reports_row_errors_and_imports_nothing(api_client, manager_user):

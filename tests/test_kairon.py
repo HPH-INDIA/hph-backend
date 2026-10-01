@@ -295,3 +295,40 @@ def test_manager_can_upload_cumulative_chunks(api_client, manager_user):
     status, body = api_client.post(f"/api/kairon/imports/{import_id}/complete", None)
     assert status == 200, body
     assert body["data"]["status"] == "completed"
+
+
+def test_cumulative_chunk_updates_new_duplicate_identity_and_preserves_history(api_client, manager_user):
+    from app.kairon.models import KaironChartHistory, KaironImportChunk
+
+    _login_manager(api_client, manager_user)
+    _get_or_create_user("charishma.sonani@example.com", "Charishma", "Sonani", "TEST-CHARISHMA")
+    status, body = api_client.post(
+        "/api/kairon/imports",
+        {"sourceFilename": "duplicate.csv", "fileChecksum": "a" * 64, "totalRows": 2},
+    )
+    assert status == 201, body
+    import_id = body["data"]["id"]
+    first = _sample_row(mbi="SYNTHETIC-DUPLICATE", status="Active", completed=None)
+    changed = _sample_row(mbi="SYNTHETIC-DUPLICATE", status="Completed")
+    payload = {"checksum": "b" * 64, "rows": [first, changed]}
+
+    status, body = api_client.post(f"/api/kairon/imports/{import_id}/chunks/0", payload)
+    assert status == 200, body
+    progress = body["data"]
+    assert progress["processedCount"] == 2
+    assert progress["insertedCount"] == 1
+    assert progress["updatedCount"] == 1
+    record = KaironChartRecord.query.one()
+    assert record.status == "Completed"
+    history = KaironChartHistory.query.filter_by(chart_record_id=record.id).all()
+    assert {(item.previous_status, item.status) for item in history} == {
+        (None, "Active"),
+        ("Active", "Completed"),
+    }
+
+    status, body = api_client.post(f"/api/kairon/imports/{import_id}/chunks/0", payload)
+    assert status == 200, body
+    assert body["data"] == progress
+    assert KaironChartRecord.query.count() == 1
+    assert KaironChartHistory.query.count() == 2
+    assert KaironImportChunk.query.filter_by(batch_id=import_id).count() == 1

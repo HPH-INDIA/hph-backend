@@ -1,4 +1,4 @@
-from marshmallow import Schema, fields, validate
+from marshmallow import Schema, ValidationError, fields, validate, validates_schema
 
 from app.responses import envelope_schema
 from app.kairon.schemas import KaironChartRecordSchema
@@ -90,6 +90,70 @@ class ManualRecordPageSchema(Schema):
     total_pages = fields.Integer(dump_only=True, data_key="totalPages")
 
 
+class ManualTeamDayQuerySchema(Schema):
+    date = fields.Date(required=True)
+
+
+class ManualTeamRangeQuerySchema(Schema):
+    from_date = fields.Date(required=True, data_key="fromDate")
+    to_date = fields.Date(required=True, data_key="toDate")
+
+    @validates_schema
+    def validate_range(self, data, **kwargs):
+        if data["from_date"] > data["to_date"]:
+            raise ValidationError("To date must be on or after from date.", field_name="toDate")
+
+
+class ManualTeamMemberSchema(Schema):
+    id = fields.Integer(dump_only=True)
+    first_name = fields.String(dump_only=True, data_key="firstName")
+    last_name = fields.String(dump_only=True, data_key="lastName")
+    emp_id = fields.String(dump_only=True, data_key="empId")
+
+
+class ManualTeamCoderSchema(Schema):
+    user = fields.Nested(ManualTeamMemberSchema, dump_only=True)
+    record = fields.Nested(ManualDailyRecordSchema, dump_only=True, allow_none=True)
+
+
+class ManualTeamSchema(Schema):
+    lead = fields.Nested(ManualTeamMemberSchema, dump_only=True, allow_none=True)
+    lead_record = fields.Nested(ManualDailyRecordSchema, dump_only=True, allow_none=True, data_key="leadRecord")
+    coders = fields.List(fields.Nested(ManualTeamCoderSchema), dump_only=True)
+
+
+class ManualTeamDaySchema(Schema):
+    date = fields.Date(dump_only=True)
+    teams = fields.List(fields.Nested(ManualTeamSchema), dump_only=True)
+
+
+ManualTeamDayEnvelopeSchema = envelope_schema(
+    "ManualTeamDayEnvelopeSchema", fields.Nested(ManualTeamDaySchema)
+)
+
+
+class ManualTeamRangeCoderSchema(Schema):
+    user = fields.Nested(ManualTeamMemberSchema, dump_only=True)
+    records = fields.List(fields.Nested(ManualDailyRecordSchema), dump_only=True)
+
+
+class ManualTeamRangeGroupSchema(Schema):
+    lead = fields.Nested(ManualTeamMemberSchema, dump_only=True, allow_none=True)
+    lead_records = fields.List(fields.Nested(ManualDailyRecordSchema), dump_only=True, data_key="leadRecords")
+    coders = fields.List(fields.Nested(ManualTeamRangeCoderSchema), dump_only=True)
+
+
+class ManualTeamRangeSchema(Schema):
+    from_date = fields.Date(dump_only=True, data_key="fromDate")
+    to_date = fields.Date(dump_only=True, data_key="toDate")
+    teams = fields.List(fields.Nested(ManualTeamRangeGroupSchema), dump_only=True)
+
+
+ManualTeamRangeEnvelopeSchema = envelope_schema(
+    "ManualTeamRangeEnvelopeSchema", fields.Nested(ManualTeamRangeSchema)
+)
+
+
 class BulkApproveManualDailyRecordsSchema(Schema):
     ids = fields.List(fields.Integer(), required=True, validate=validate.Length(min=1))
 
@@ -100,8 +164,7 @@ class BulkRejectItemSchema(Schema):
 
 
 class BulkRejectManualDailyRecordsSchema(Schema):
-    # One reason per record, never one shared reason for the batch - see
-    # the Reports doc's §3.3.
+    # Each item carries its reason, which may be shared across the batch.
     items = fields.List(fields.Nested(BulkRejectItemSchema), required=True, validate=validate.Length(min=1))
 
 

@@ -377,7 +377,7 @@ def process_import_chunk(batch_id, chunk_number, checksum, rows):
         record.updated_at = now
         db.session.add(
             KaironChartHistory(
-                chart_record_id=record.id,
+                chart_record=record,
                 batch_id=batch.id,
                 previous_status=previous_status,
                 status=record.status,

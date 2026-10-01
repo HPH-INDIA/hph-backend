@@ -6,6 +6,7 @@ from app.auth import require_feature, require_role, require_role_types
 from app.extensions import db
 from app.kairon.models import KaironChartAnalystAction, KaironChartRecord, KaironUploadBatch
 from app.manual_daily_records.models import ManualDailyRecord
+from app.manual_daily_records.services import manual_review_user_ids
 from app.reports import bp
 from app.reports.schemas import (
     BulkApproveManualDailyRecordsSchema,
@@ -23,6 +24,10 @@ from app.reports.schemas import (
     KaironRecordPageEnvelopeSchema,
     ManualRecordPageEnvelopeSchema,
     ManualReviewQuerySchema,
+    ManualTeamDayEnvelopeSchema,
+    ManualTeamDayQuerySchema,
+    ManualTeamRangeEnvelopeSchema,
+    ManualTeamRangeQuerySchema,
     MonthlyGoalEnvelopeSchema,
     MonthlyGoalQuerySchema,
     PaginationQuerySchema,
@@ -34,6 +39,8 @@ from app.reports.services import (
     bulk_reject_manual_records,
     get_efficiency,
     get_coding_dashboard,
+    get_manual_team_day,
+    get_manual_team_range,
     resolve_dashboard_window,
     get_monthly_goal,
 )
@@ -222,14 +229,12 @@ class ReportsManual(MethodView):
 
 @bp.route("/reports/manual/reviews")
 class ReportsManualReviews(MethodView):
-    @require_feature(REPORTS_FEATURE, access="write")
-    @require_role("manager")
+    @require_feature(REPORTS_FEATURE)
+    @require_role_types("manager", "lead")
     @bp.arguments(ManualReviewQuerySchema, location="query")
     @bp.response(200, ManualRecordPageEnvelopeSchema)
     def get(self, args):
-        # Other users' records, pending and decided alike, for audit (§3.3)
-        # - never the reviewing manager's own, since they already see
-        # those in their own Manual tab (§3.2).
+        # Leads review direct employees; managers read their team for oversight.
         query = ManualDailyRecord.query.filter(ManualDailyRecord.user_id != g.user.id)
         role_type_code = g.user.role.role_type.code
         if role_type_code == "manager":
@@ -241,8 +246,10 @@ class ReportsManualReviews(MethodView):
                 if lead_team_ids is None:
                     abort(400, message="leadId must reference an active lead in your team.")
                 query = query.filter(ManualDailyRecord.user_id.in_(lead_team_ids))
-        elif args.get("lead_id") is not None:
-            abort(400, message="leadId is only available to managers.")
+        else:
+            query = query.filter(ManualDailyRecord.user_id.in_(manual_review_user_ids(g.user)))
+            if args.get("lead_id") is not None and args["lead_id"] != g.user.id:
+                abort(400, message="leadId must reference your own team.")
         if args.get("from_date"):
             query = query.filter(ManualDailyRecord.record_date >= args["from_date"])
         if args.get("to_date"):
@@ -259,10 +266,38 @@ class ReportsManualReviews(MethodView):
         return {"status": 200, "message": "Manual daily records for review retrieved successfully.", "data": _page(query, args)}
 
 
+@bp.route("/reports/manual/team-day")
+class ReportsManualTeamDay(MethodView):
+    @require_feature(REPORTS_FEATURE)
+    @require_role_types("manager", "lead")
+    @bp.arguments(ManualTeamDayQuerySchema, location="query")
+    @bp.response(200, ManualTeamDayEnvelopeSchema)
+    def get(self, args):
+        return {
+            "status": 200,
+            "message": "Manual daily team records retrieved successfully.",
+            "data": get_manual_team_day(g.user, args["date"]),
+        }
+
+
+@bp.route("/reports/manual/team-range")
+class ReportsManualTeamRange(MethodView):
+    @require_feature(REPORTS_FEATURE)
+    @require_role_types("manager", "lead")
+    @bp.arguments(ManualTeamRangeQuerySchema, location="query")
+    @bp.response(200, ManualTeamRangeEnvelopeSchema)
+    def get(self, args):
+        return {
+            "status": 200,
+            "message": "Manual team records retrieved successfully.",
+            "data": get_manual_team_range(g.user, args["from_date"], args["to_date"]),
+        }
+
+
 @bp.route("/reports/manual/reviews/bulk-approve")
 class ReportsManualReviewsBulkApprove(MethodView):
     @require_feature(REPORTS_FEATURE, access="write")
-    @require_role("manager")
+    @require_role("lead")
     @bp.arguments(BulkApproveManualDailyRecordsSchema)
     @bp.response(200, BulkApproveResultEnvelopeSchema)
     def post(self, data):
@@ -273,7 +308,7 @@ class ReportsManualReviewsBulkApprove(MethodView):
 @bp.route("/reports/manual/reviews/bulk-reject")
 class ReportsManualReviewsBulkReject(MethodView):
     @require_feature(REPORTS_FEATURE, access="write")
-    @require_role("manager")
+    @require_role("lead")
     @bp.arguments(BulkRejectManualDailyRecordsSchema)
     @bp.response(200, BulkRejectResultEnvelopeSchema)
     def post(self, data):

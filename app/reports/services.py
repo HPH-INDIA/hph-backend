@@ -14,10 +14,11 @@ from app.extensions import db
 from app.kairon.models import KaironChartRecord, KaironUploadBatch
 from app.login_hours.models import LoginHourRecord
 from app.manual_daily_records.models import ManualDailyRecord
-from app.manual_daily_records.services import approve_record, reject_record
+from app.manual_daily_records.services import approve_record, manual_review_user_ids, reject_record
 from app.reports.models import OfficeHoliday
 from app.roles.models import Role, RoleType
 from app.users.models import Project, User
+from app.users.hierarchy import lead_employee_user_ids, manager_team_user_ids
 
 
 FULL_WORKDAY_MINUTES = 8 * 60
@@ -488,17 +489,16 @@ def resolve_dashboard_window(args):
 
 
 def bulk_approve_manual_records(record_ids, reviewed_by_id):
-    """Approves every id in `record_ids` that's currently pending, in one
-    transaction. An id that doesn't exist or isn't pending is reported back
-    in `skipped` rather than failing the whole batch - see the Reports
-    doc's §3.3/§7 on why Accept All can't be all-or-nothing (the visible/
-    filtered set it's applied to may include already-decided records,
-    shown for audit).
+    """Approve pending records belonging to the reviewing lead's employees.
+
+    Missing, out-of-scope, or already-decided records are skipped rather
+    than failing the complete batch.
     """
+    reviewable_user_ids = set(manual_review_user_ids(db.session.get(User, reviewed_by_id)))
     approved, skipped = [], []
     for record_id in record_ids:
         record = db.session.get(ManualDailyRecord, record_id)
-        if record is None:
+        if record is None or record.user_id not in reviewable_user_ids:
             skipped.append({"id": record_id, "reason": "Record not found."})
         elif record.status != "pending":
             skipped.append({"id": record_id, "reason": "Record isn't pending review."})
@@ -512,13 +512,13 @@ def bulk_approve_manual_records(record_ids, reviewed_by_id):
 
 def bulk_reject_manual_records(items, reviewed_by_id):
     """Same best-effort behavior as bulk_approve_manual_records(), but each
-    item carries its own {id, reason} - rejection always needs a reason per
-    record, never one shared across the batch.
+    item carries {id, reason}. A caller may repeat one reason across a batch.
     """
+    reviewable_user_ids = set(manual_review_user_ids(db.session.get(User, reviewed_by_id)))
     rejected, skipped = [], []
     for item in items:
         record = db.session.get(ManualDailyRecord, item["id"])
-        if record is None:
+        if record is None or record.user_id not in reviewable_user_ids:
             skipped.append({"id": item["id"], "reason": "Record not found."})
         elif record.status != "pending":
             skipped.append({"id": item["id"], "reason": "Record isn't pending review."})
@@ -528,6 +528,84 @@ def bulk_reject_manual_records(items, reviewed_by_id):
 
     db.session.commit()
     return {"rejected": rejected, "skipped": skipped}
+
+
+def get_manual_team_day(viewer, record_date):
+    """One selected day for every eligible coder, grouped under their lead."""
+    result = get_manual_team_range(viewer, record_date, record_date)
+    return {
+        "date": record_date,
+        "teams": [
+            {
+                "lead": team["lead"],
+                "lead_record": next(iter(team["lead_records"]), None),
+                "coders": [
+                    {"user": coder["user"], "record": next(iter(coder["records"]), None)}
+                    for coder in team["coders"]
+                ],
+            }
+            for team in result["teams"]
+        ],
+    }
+
+
+def get_manual_team_range(viewer, from_date, to_date):
+    """Daily records in an inclusive range, grouped without duplicating leads."""
+    if viewer.role.role_type.code == "lead":
+        leads = [viewer]
+        member_ids = [viewer.id, *lead_employee_user_ids(viewer.id)]
+    else:
+        member_ids = manager_team_user_ids(viewer.id)
+        leads = (
+            User.query.join(Role).join(RoleType)
+            .filter(User.reports_to_id == viewer.id, RoleType.code == "lead")
+            .order_by(User.first_name, User.last_name, User.id)
+            .all()
+        )
+    members = (
+        User.query.filter(User.id.in_(member_ids))
+        .order_by(User.first_name, User.last_name, User.id)
+        .all()
+    )
+    records = {}
+    last_working_days = {member.id: member.last_working_day for member in members}
+    for record in (
+        ManualDailyRecord.query.filter(
+            ManualDailyRecord.user_id.in_(member_ids),
+            ManualDailyRecord.record_date >= from_date,
+            ManualDailyRecord.record_date <= to_date,
+        )
+        .order_by(ManualDailyRecord.record_date, ManualDailyRecord.id)
+        .all()
+    ):
+        last_working_day = last_working_days.get(record.user_id)
+        if last_working_day is None or record.record_date <= last_working_day:
+            records.setdefault(record.user_id, []).append(record)
+
+    def eligible(user):
+        if user.last_working_day is not None:
+            return from_date <= user.last_working_day
+        return user.is_active or user.id in records
+
+    coders_by_lead = {}
+    for member in members:
+        if member.role.role_type.code == "employee" and eligible(member):
+            coders_by_lead.setdefault(member.reports_to_id, []).append(
+                {"user": member, "records": records.get(member.id, [])}
+            )
+    teams = []
+    for lead in leads:
+        coders = coders_by_lead.pop(lead.id, [])
+        if eligible(lead) or coders:
+            teams.append({
+                "lead": lead,
+                "lead_records": records.get(lead.id, []) if eligible(lead) else [],
+                "coders": coders,
+            })
+    unassigned = [coder for coders in coders_by_lead.values() for coder in coders]
+    if unassigned:
+        teams.append({"lead": None, "lead_records": [], "coders": unassigned})
+    return {"from_date": from_date, "to_date": to_date, "teams": teams}
 
 
 def get_coding_dashboard(from_date, to_date, program=None, lead_id=None, cohort_id=None, include_daily=False):

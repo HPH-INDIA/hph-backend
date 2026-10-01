@@ -9,6 +9,7 @@ day - see services.upsert_own_record().
 from app.extensions import db
 
 VALID_STATUSES = ("pending", "approved", "rejected")
+VALID_MEETING_TYPES = ("Assessment", "One-O-One", "Meeting", "Training", "Huddle", "PKT", "Others")
 
 # Each of the four hour fields is independently capped at 10 - chosen to
 # comfortably cover a long working day while still catching a
@@ -45,6 +46,10 @@ class ManualDailyRecord(db.Model):
             name="ck_manual_daily_records_meeting_engagement_hours",
         ),
         db.CheckConstraint(f"status IN ({_sql_in_list(VALID_STATUSES)})", name="ck_manual_daily_records_status"),
+        db.CheckConstraint(
+            f"meeting_type IN ({_sql_in_list(VALID_MEETING_TYPES)})",
+            name="ck_manual_daily_records_meeting_type",
+        ),
     )
 
     id = db.Column(db.Integer, primary_key=True)
@@ -58,6 +63,9 @@ class ManualDailyRecord(db.Model):
     no_inventory_idle_time_hours = db.Column(db.Numeric(4, 2), nullable=False, default=0)
     leave_hours = db.Column(db.Numeric(4, 2), nullable=False, default=0)
     meeting_engagement_hours = db.Column(db.Numeric(4, 2), nullable=False, default=0)
+    meeting_type = db.Column(db.String(32), nullable=True)
+    # Nullable for historical rows. The scalar fields remain the aggregate/legacy view.
+    meetings = db.Column(db.JSON, nullable=True)
 
     status = db.Column(db.String(16), nullable=False, default="pending")
     reviewed_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)

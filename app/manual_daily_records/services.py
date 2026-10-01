@@ -19,7 +19,7 @@ from app.manual_daily_records.models import (
     ManualImportBatch,
     ManualImportChunk,
 )
-from app.users.hierarchy import manager_team_user_ids
+from app.users.hierarchy import lead_employee_user_ids, manager_team_user_ids
 from app.users.models import User
 
 MANUAL_UPLOAD_HEADERS = (
@@ -50,6 +50,36 @@ _ENTRY_FIELDS = (
     "leave_hours",
     "meeting_engagement_hours",
 )
+
+
+def manual_review_user_ids(reviewer):
+    """Only a lead's direct employee reports are eligible for their review."""
+    if reviewer is None or reviewer.role.role_type.code != "lead":
+        return []
+    return lead_employee_user_ids(reviewer.id)
+
+
+def scope_manual_records(query, viewer):
+    role_type = viewer.role.role_type.code
+    if role_type == "employee":
+        return query.filter(ManualDailyRecord.user_id == viewer.id)
+    if role_type == "lead":
+        user_ids = [viewer.id, *lead_employee_user_ids(viewer.id)]
+        return query.filter(ManualDailyRecord.user_id.in_(user_ids))
+    if role_type == "manager":
+        user_ids = [viewer.id, *manager_team_user_ids(viewer.id)]
+        return query.filter(ManualDailyRecord.user_id.in_(user_ids))
+    return query
+
+
+def _set_submission_review(record, owner, submitted_by_id):
+    record.status = "pending"
+    record.reviewed_by_id = None
+    record.reviewed_at = None
+    record.rejection_reason = None
+    if owner.role.role_type.code == "lead":
+        # Attribute automatic approval to the actor who saved/imported it.
+        approve_record(record, submitted_by_id)
 
 
 def build_manual_upload_template_xlsx():
@@ -224,10 +254,7 @@ def import_manual_daily_records(file_base64, source_filename, record_date, uploa
         record.production_count = data["production_count"]
         for field in _ENTRY_FIELDS:
             setattr(record, field, data[field])
-        record.status = "pending"
-        record.reviewed_by_id = None
-        record.reviewed_at = None
-        record.rejection_reason = None
+        _set_submission_review(record, user, uploaded_by_id)
         if record.production_count > 0:
             positive_user_ids.add(user.id)
 
@@ -345,12 +372,12 @@ def process_manual_import_chunk(batch_id, chunk_number, checksum, rows, uploaded
         record.pvp_count = row["production_count"]
         record.foundation_count = 0
         record.production_count = row["production_count"]
+        previous_meeting_hours = record.meeting_engagement_hours if record.id is not None else None
         for field in _ENTRY_FIELDS:
             setattr(record, field, row[field])
-        record.status = "pending"
-        record.reviewed_by_id = None
-        record.reviewed_at = None
-        record.rejection_reason = None
+        if previous_meeting_hours != record.meeting_engagement_hours:
+            record.meetings = None
+        _set_submission_review(record, users_by_id[record.user_id], uploaded_by_id)
         if record.production_count > 0:
             positive_user_ids.add(record.user_id)
 
@@ -403,11 +430,8 @@ def upsert_own_record(user_id, data):
     re-submitting the same day always edits in place rather than creating
     a duplicate.
 
-    Any edit - whether the record was previously Pending, Approved, or
-    Rejected - resets it to Pending and clears the prior review: an
-    approval or rejection was a decision about these exact numbers, and
-    that decision no longer applies once the numbers change (§6.3, applied
-    symmetrically to rejection per §9's resubmission assumption).
+    Employee edits reset the record to Pending and clear prior review.
+    Lead entries are automatically approved on both creation and edit.
     """
     record = ManualDailyRecord.query.filter_by(user_id=user_id, record_date=data["record_date"]).first()
     if record is None:
@@ -422,13 +446,25 @@ def upsert_own_record(user_id, data):
     record.foundation_count = foundation_count or 0
     record.production_count = record.pvp_count + record.foundation_count
 
+    previous_meeting_hours = record.meeting_engagement_hours if record.id is not None else None
     for field in _ENTRY_FIELDS:
         setattr(record, field, data[field])
 
-    record.status = "pending"
-    record.reviewed_by_id = None
-    record.reviewed_at = None
-    record.rejection_reason = None
+    if "meetings" in data:
+        record.meetings = [
+            {"type": meeting["type"], "hours": str(meeting["hours"])}
+            for meeting in data["meetings"]
+        ]
+        record.meeting_type = record.meetings[0]["type"] if len(record.meetings) == 1 else None
+    elif "meeting_type" in data:
+        # Legacy clients can only represent one type and an aggregate. Their
+        # edits replace an existing breakdown rather than leaving it stale.
+        record.meetings = None
+        record.meeting_type = data["meeting_type"]
+    elif previous_meeting_hours != record.meeting_engagement_hours:
+        record.meetings = None
+
+    _set_submission_review(record, db.session.get(User, user_id), user_id)
 
     db.session.commit()
 
