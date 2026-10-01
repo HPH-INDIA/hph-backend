@@ -23,6 +23,7 @@ from app.reports.schemas import (
     KaironCompletedUserQuerySchema,
     KaironLeadTeamRangeEnvelopeSchema,
     KaironRecordPageEnvelopeSchema,
+    KaironTeamRecordQuerySchema,
     ManualRecordPageEnvelopeSchema,
     ManualReviewQuerySchema,
     ManualTeamDayEnvelopeSchema,
@@ -198,6 +199,33 @@ class ReportsKaironTeamHolds(MethodView):
         return {
             "status": 200,
             "message": "Current Kairon charts on hold retrieved successfully.",
+            "data": _page(query, args),
+        }
+
+
+@bp.route("/reports/kairon/team-records")
+class ReportsKaironTeamRecords(MethodView):
+    @require_feature(REPORTS_FEATURE)
+    @require_role("lead")
+    @bp.arguments(KaironTeamRecordQuerySchema, location="query")
+    @bp.response(200, KaironRecordPageEnvelopeSchema)
+    def get(self, args):
+        if args["user_id"] not in lead_employee_user_ids(g.user.id):
+            abort(404, message="Coder not found in your team.")
+        query = (
+            KaironChartRecord.query.join(KaironUploadBatch)
+            .filter(
+                KaironUploadBatch.superseded_at.is_(None),
+                KaironChartRecord.status == "Completed",
+                KaironChartRecord.user_id == args["user_id"],
+                KaironChartRecord.completed_date >= args["from_date"],
+                KaironChartRecord.completed_date <= args["to_date"],
+            )
+            .order_by(KaironChartRecord.completed_date.desc(), KaironChartRecord.id.desc())
+        )
+        return {
+            "status": 200,
+            "message": "Coder Kairon chart records retrieved successfully.",
             "data": _page(query, args),
         }
 

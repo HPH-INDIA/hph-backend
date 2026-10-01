@@ -104,6 +104,10 @@ class ManualTeamRangeQuerySchema(Schema):
             raise ValidationError("To date must be on or after from date.", field_name="toDate")
 
 
+class KaironTeamRecordQuerySchema(PaginationQuerySchema, ManualTeamRangeQuerySchema):
+    user_id = fields.Integer(required=True, validate=validate.Range(min=1), data_key="userId")
+
+
 class ManualTeamMemberSchema(Schema):
     id = fields.Integer(dump_only=True)
     first_name = fields.String(dump_only=True, data_key="firstName")
