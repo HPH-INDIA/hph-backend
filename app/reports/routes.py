@@ -46,7 +46,7 @@ from app.reports.services import (
     resolve_dashboard_window,
     get_monthly_goal,
 )
-from app.users.hierarchy import manager_lead_team_user_ids, manager_team_user_ids
+from app.users.hierarchy import lead_employee_user_ids, manager_lead_team_user_ids, manager_team_user_ids
 from app.users.models import User
 
 # One feature controls both Kairon and Manual report visibility. Write access
@@ -175,6 +175,30 @@ class ReportsKaironTeamRange(MethodView):
             "status": 200,
             "message": "Kairon lead and coder production retrieved successfully.",
             "data": get_kairon_lead_team_range(g.user, args["from_date"], args["to_date"]),
+        }
+
+
+@bp.route("/reports/kairon/team-holds")
+class ReportsKaironTeamHolds(MethodView):
+    @require_feature(REPORTS_FEATURE)
+    @require_role("lead")
+    @bp.arguments(PaginationQuerySchema, location="query")
+    @bp.response(200, KaironRecordPageEnvelopeSchema)
+    def get(self, args):
+        team_ids = [g.user.id, *lead_employee_user_ids(g.user.id)]
+        query = (
+            KaironChartRecord.query.join(KaironUploadBatch)
+            .filter(
+                KaironUploadBatch.superseded_at.is_(None),
+                KaironChartRecord.status == "On Hold",
+                KaironChartRecord.user_id.in_(team_ids),
+            )
+            .order_by(KaironChartRecord.created_date.desc(), KaironChartRecord.id.desc())
+        )
+        return {
+            "status": 200,
+            "message": "Current Kairon charts on hold retrieved successfully.",
+            "data": _page(query, args),
         }
 
 

@@ -67,6 +67,7 @@ def test_kairon_lead_range_separates_own_charts_and_direct_coders(api_client):
     chart(lead, day_one, status="On Hold")
     chart(coder, day_one, status="On Hold")
     chart(no_charts, day_one, status="On Hold")
+    chart(coder, dt.date(2026, 10, 2), status="On Hold")
     chart(coder, day_one, status="On Hold", upload=superseded)
     chart(outsider, day_one)
     chart(outsider, day_one, status="On Hold")
@@ -89,7 +90,7 @@ def test_kairon_lead_range_separates_own_charts_and_direct_coders(api_client):
         no_charts.id: (0, []),
     }
     assert {item["user"]["id"]: item["summary"] for item in report["coders"]} == {
-        coder.id: {"pvp": 2, "foundation": 1, "onHold": 1, "total": 3},
+        coder.id: {"pvp": 2, "foundation": 1, "onHold": 2, "total": 3},
         no_charts.id: {"pvp": 0, "foundation": 0, "onHold": 1, "total": 0},
     }
 
@@ -100,11 +101,25 @@ def test_kairon_lead_range_separates_own_charts_and_direct_coders(api_client):
     assert {item["user"]["id"]: item["count"] for item in body["data"]["coders"]} == {
         coder.id: 1, no_charts.id: 0,
     }
+    assert next(item for item in body["data"]["coders"] if item["user"]["id"] == coder.id)["summary"]["onHold"] == 2
+
+    status, body = api_client.get("/api/reports/kairon/team-holds?pageSize=2")
+    assert status == 200, body
+    assert body["data"]["total"] == 4
+    assert body["data"]["totalPages"] == 2
+    assert body["data"]["items"][0]["created"] == "2026-10-02"
+    assert {item["userId"] for item in body["data"]["items"]} <= {lead.id, coder.id, no_charts.id}
+    status, body = api_client.get("/api/reports/kairon/team-holds?page=2&pageSize=2")
+    assert status == 200, body
+    assert len(body["data"]["items"]) == 2
+    assert {item["userId"] for item in body["data"]["items"]} <= {lead.id, coder.id, no_charts.id}
 
     status, _ = api_client.get("/api/reports/kairon/team-range?fromDate=2026-09-12&toDate=2026-09-11")
     assert status == 422
 
     assert api_client.login(coder.email, "test-password")[0] == 200
     assert api_client.get("/api/reports/kairon/team-range?fromDate=2026-09-10&toDate=2026-09-11")[0] == 403
+    assert api_client.get("/api/reports/kairon/team-holds")[0] == 403
     assert api_client.login(manager.email, "test-password")[0] == 200
     assert api_client.get("/api/reports/kairon/team-range?fromDate=2026-09-10&toDate=2026-09-11")[0] == 403
+    assert api_client.get("/api/reports/kairon/team-holds")[0] == 403
