@@ -123,7 +123,10 @@ def test_kairon_lead_range_separates_own_charts_and_direct_coders(api_client):
     status, body = api_client.get(f"/api/reports/kairon/team-records?userId={no_charts.id}&fromDate=2026-09-10&toDate=2026-09-11")
     assert status == 200 and body["data"]["total"] == 0
     assert api_client.get(f"/api/reports/kairon/team-records?userId={outsider.id}&fromDate=2026-09-10&toDate=2026-09-11")[0] == 404
-    assert api_client.get(f"/api/reports/kairon/team-records?userId={lead.id}&fromDate=2026-09-10&toDate=2026-09-11")[0] == 404
+    status, body = api_client.get(f"/api/reports/kairon/team-records?userId={lead.id}&fromDate=2026-09-10&toDate=2026-09-11")
+    assert status == 200, body
+    assert body["data"]["total"] == 2
+    assert {item["userId"] for item in body["data"]["items"]} == {lead.id}
     assert api_client.get(f"/api/reports/kairon/team-records?userId={coder.id}&fromDate=2026-09-11&toDate=2026-09-10")[0] == 422
     status, body = api_client.get("/api/reports/kairon/team-holds?page=2&pageSize=2")
     assert status == 200, body

@@ -210,8 +210,8 @@ class ReportsKaironTeamRecords(MethodView):
     @bp.arguments(KaironTeamRecordQuerySchema, location="query")
     @bp.response(200, KaironRecordPageEnvelopeSchema)
     def get(self, args):
-        if args["user_id"] not in lead_employee_user_ids(g.user.id):
-            abort(404, message="Coder not found in your team.")
+        if args["user_id"] != g.user.id and args["user_id"] not in lead_employee_user_ids(g.user.id):
+            abort(404, message="Team member not found.")
         query = (
             KaironChartRecord.query.join(KaironUploadBatch)
             .filter(
@@ -225,7 +225,7 @@ class ReportsKaironTeamRecords(MethodView):
         )
         return {
             "status": 200,
-            "message": "Coder Kairon chart records retrieved successfully.",
+            "message": "Team member Kairon chart records retrieved successfully.",
             "data": _page(query, args),
         }
 
