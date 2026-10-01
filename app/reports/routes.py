@@ -21,6 +21,7 @@ from app.reports.schemas import (
     KaironCompletedRecordQuerySchema,
     KaironCompletedUserPageEnvelopeSchema,
     KaironCompletedUserQuerySchema,
+    KaironLeadTeamRangeEnvelopeSchema,
     KaironRecordPageEnvelopeSchema,
     ManualRecordPageEnvelopeSchema,
     ManualReviewQuerySchema,
@@ -39,6 +40,7 @@ from app.reports.services import (
     bulk_reject_manual_records,
     get_efficiency,
     get_coding_dashboard,
+    get_kairon_lead_team_range,
     get_manual_team_day,
     get_manual_team_range,
     resolve_dashboard_window,
@@ -159,6 +161,20 @@ class ReportsKaironCompletedRecords(MethodView):
             "status": 200,
             "message": "Completed Kairon chart details retrieved successfully.",
             "data": _page(query, args),
+        }
+
+
+@bp.route("/reports/kairon/team-range")
+class ReportsKaironTeamRange(MethodView):
+    @require_feature(REPORTS_FEATURE)
+    @require_role("lead")
+    @bp.arguments(ManualTeamRangeQuerySchema, location="query")
+    @bp.response(200, KaironLeadTeamRangeEnvelopeSchema)
+    def get(self, args):
+        return {
+            "status": 200,
+            "message": "Kairon lead and coder production retrieved successfully.",
+            "data": get_kairon_lead_team_range(g.user, args["from_date"], args["to_date"]),
         }
 
 

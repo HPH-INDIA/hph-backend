@@ -111,6 +111,25 @@ class ManualTeamMemberSchema(Schema):
     emp_id = fields.String(dump_only=True, data_key="empId")
 
 
+class KaironTeamCoderSchema(Schema):
+    user = fields.Nested(ManualTeamMemberSchema, dump_only=True)
+    days = fields.List(fields.Nested(KaironCompletedDailyCountSchema), dump_only=True)
+    count = fields.Integer(dump_only=True)
+
+
+class KaironLeadTeamRangeSchema(Schema):
+    from_date = fields.Date(dump_only=True, data_key="fromDate")
+    to_date = fields.Date(dump_only=True, data_key="toDate")
+    lead = fields.Nested(ManualTeamMemberSchema, dump_only=True)
+    lead_days = fields.List(fields.Nested(KaironCompletedDailyCountSchema), dump_only=True, data_key="leadDays")
+    coders = fields.List(fields.Nested(KaironTeamCoderSchema), dump_only=True)
+
+
+KaironLeadTeamRangeEnvelopeSchema = envelope_schema(
+    "KaironLeadTeamRangeEnvelopeSchema", fields.Nested(KaironLeadTeamRangeSchema)
+)
+
+
 class ManualTeamCoderSchema(Schema):
     user = fields.Nested(ManualTeamMemberSchema, dump_only=True)
     record = fields.Nested(ManualDailyRecordSchema, dump_only=True, allow_none=True)

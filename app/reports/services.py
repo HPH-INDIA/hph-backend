@@ -549,6 +549,57 @@ def get_manual_team_day(viewer, record_date):
     }
 
 
+def get_kairon_lead_team_range(lead, from_date, to_date):
+    """Completed charts for a lead and direct coders, separated by person/day."""
+    coder_ids = lead_employee_user_ids(lead.id)
+    coders = (
+        User.query.filter(User.id.in_(coder_ids))
+        .order_by(User.first_name, User.last_name, User.id)
+        .all()
+    )
+    grouped = {}
+    for user_id, completed_date, count in (
+        db.session.query(
+            KaironChartRecord.user_id,
+            KaironChartRecord.completed_date,
+            func.count(KaironChartRecord.id),
+        )
+        .join(KaironUploadBatch, KaironChartRecord.batch_id == KaironUploadBatch.id)
+        .filter(
+            KaironUploadBatch.superseded_at.is_(None),
+            KaironChartRecord.status == "Completed",
+            KaironChartRecord.completed_date >= from_date,
+            KaironChartRecord.completed_date <= to_date,
+            KaironChartRecord.user_id.in_([lead.id, *coder_ids]),
+        )
+        .group_by(KaironChartRecord.user_id, KaironChartRecord.completed_date)
+        .all()
+    ):
+        grouped.setdefault(user_id, []).append({"date": completed_date, "count": count})
+
+    def days_for(user_id):
+        return sorted(grouped.get(user_id, []), key=lambda day: day["date"], reverse=True)
+
+    def eligible(coder):
+        if coder.last_working_day is not None:
+            return from_date <= coder.last_working_day
+        return coder.is_active or bool(grouped.get(coder.id))
+
+    coder_entries = []
+    for coder in coders:
+        if eligible(coder):
+            days = days_for(coder.id)
+            coder_entries.append({"user": coder, "days": days, "count": sum(day["count"] for day in days)})
+
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "lead": lead,
+        "lead_days": days_for(lead.id),
+        "coders": coder_entries,
+    }
+
+
 def get_manual_team_range(viewer, from_date, to_date):
     """Daily records in an inclusive range, grouped without duplicating leads."""
     if viewer.role.role_type.code == "lead":
