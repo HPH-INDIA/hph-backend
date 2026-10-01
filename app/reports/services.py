@@ -549,6 +549,54 @@ def get_manual_team_day(viewer, record_date):
     }
 
 
+def _kairon_user_summaries(user_ids, from_date, to_date):
+    """Completed program counts in the window and current holds by user."""
+    summaries = {}
+    def summary_for(user_id):
+        return summaries.setdefault(user_id, {"pvp": 0, "foundation": 0, "on_hold": 0, "total": 0})
+
+    for user_id, program, count in (
+        db.session.query(
+            KaironChartRecord.user_id,
+            KaironChartRecord.program,
+            func.count(KaironChartRecord.id),
+        )
+        .join(KaironUploadBatch, KaironChartRecord.batch_id == KaironUploadBatch.id)
+        .filter(
+            KaironUploadBatch.superseded_at.is_(None),
+            KaironChartRecord.status == "Completed",
+            KaironChartRecord.completed_date >= from_date,
+            KaironChartRecord.completed_date <= to_date,
+            KaironChartRecord.user_id.in_(user_ids),
+        )
+        .group_by(KaironChartRecord.user_id, KaironChartRecord.program)
+        .all()
+    ):
+        summary = summary_for(user_id)
+        summary["total"] += count
+        normalized_program = program.strip().upper()
+        if normalized_program == "PVP":
+            summary["pvp"] += count
+        elif "FOUNDATION" in normalized_program:
+            summary["foundation"] += count
+
+    # Hold is current inventory: On Hold records have no completion date and
+    # must not be mixed into the selected period's completed production.
+    for user_id, count in (
+        db.session.query(KaironChartRecord.user_id, func.count(KaironChartRecord.id))
+        .join(KaironUploadBatch, KaironChartRecord.batch_id == KaironUploadBatch.id)
+        .filter(
+            KaironUploadBatch.superseded_at.is_(None),
+            KaironChartRecord.status == "On Hold",
+            KaironChartRecord.user_id.in_(user_ids),
+        )
+        .group_by(KaironChartRecord.user_id)
+        .all()
+    ):
+        summary_for(user_id)["on_hold"] = count
+    return summaries
+
+
 def get_kairon_lead_team_range(lead, from_date, to_date):
     """Completed production and current holds for a lead and direct coders."""
     coder_ids = lead_employee_user_ids(lead.id)
@@ -576,51 +624,10 @@ def get_kairon_lead_team_range(lead, from_date, to_date):
         .all()
     ):
         grouped.setdefault(user_id, []).append({"date": completed_date, "count": count})
-
-    summaries = {}
+    summaries = _kairon_user_summaries([lead.id, *coder_ids], from_date, to_date)
 
     def summary_for(user_id):
-        return summaries.setdefault(user_id, {"pvp": 0, "foundation": 0, "on_hold": 0, "total": 0})
-
-    for user_id, program, count in (
-        db.session.query(
-            KaironChartRecord.user_id,
-            KaironChartRecord.program,
-            func.count(KaironChartRecord.id),
-        )
-        .join(KaironUploadBatch, KaironChartRecord.batch_id == KaironUploadBatch.id)
-        .filter(
-            KaironUploadBatch.superseded_at.is_(None),
-            KaironChartRecord.status == "Completed",
-            KaironChartRecord.completed_date >= from_date,
-            KaironChartRecord.completed_date <= to_date,
-            KaironChartRecord.user_id.in_([lead.id, *coder_ids]),
-        )
-        .group_by(KaironChartRecord.user_id, KaironChartRecord.program)
-        .all()
-    ):
-        summary = summary_for(user_id)
-        summary["total"] += count
-        normalized_program = program.strip().upper()
-        if normalized_program == "PVP":
-            summary["pvp"] += count
-        elif "FOUNDATION" in normalized_program:
-            summary["foundation"] += count
-
-    # Hold is current inventory: On Hold records have no completion date and
-    # must not be mixed into the selected period's completed production.
-    for user_id, count in (
-        db.session.query(KaironChartRecord.user_id, func.count(KaironChartRecord.id))
-        .join(KaironUploadBatch, KaironChartRecord.batch_id == KaironUploadBatch.id)
-        .filter(
-            KaironUploadBatch.superseded_at.is_(None),
-            KaironChartRecord.status == "On Hold",
-            KaironChartRecord.user_id.in_([lead.id, *coder_ids]),
-        )
-        .group_by(KaironChartRecord.user_id)
-        .all()
-    ):
-        summary_for(user_id)["on_hold"] = count
+        return summaries.get(user_id, {"pvp": 0, "foundation": 0, "on_hold": 0, "total": 0})
 
     def days_for(user_id):
         return sorted(grouped.get(user_id, []), key=lambda day: day["date"], reverse=True)
@@ -649,6 +656,46 @@ def get_kairon_lead_team_range(lead, from_date, to_date):
         "lead_summary": summary_for(lead.id),
         "coders": coder_entries,
     }
+
+
+def get_kairon_manager_team_range(manager, from_date, to_date):
+    """Completed Kairon production for this manager's leads and coders."""
+    member_ids = manager_team_user_ids(manager.id)
+    members = (
+        User.query.filter(User.id.in_(member_ids))
+        .order_by(User.first_name, User.last_name, User.id)
+        .all()
+    )
+    leads = [
+        member for member in members
+        if member.role.role_type.code == "lead" and member.reports_to_id == manager.id
+    ]
+    summaries = _kairon_user_summaries(member_ids, from_date, to_date)
+
+    def summary_for(user_id):
+        return summaries.get(user_id, {"pvp": 0, "foundation": 0, "on_hold": 0, "total": 0})
+
+    def eligible(member):
+        if member.last_working_day is not None:
+            return from_date <= member.last_working_day
+        return member.is_active or summary_for(member.id)["total"] > 0
+
+    coders_by_lead = {}
+    for member in members:
+        if member.role.role_type.code == "employee" and eligible(member):
+            coders_by_lead.setdefault(member.reports_to_id, []).append({
+                "user": member,
+                "summary": summary_for(member.id),
+            })
+    teams = []
+    for lead in leads:
+        coders = coders_by_lead.pop(lead.id, [])
+        if eligible(lead) or coders:
+            teams.append({"lead": lead, "lead_summary": summary_for(lead.id), "coders": coders})
+    unassigned = [coder for coders in coders_by_lead.values() for coder in coders]
+    if unassigned:
+        teams.append({"lead": None, "lead_summary": summary_for(None), "coders": unassigned})
+    return {"from_date": from_date, "to_date": to_date, "teams": teams}
 
 
 def get_manual_team_range(viewer, from_date, to_date):

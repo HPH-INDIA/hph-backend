@@ -22,6 +22,7 @@ from app.reports.schemas import (
     KaironCompletedUserPageEnvelopeSchema,
     KaironCompletedUserQuerySchema,
     KaironLeadTeamRangeEnvelopeSchema,
+    KaironManagerTeamRangeEnvelopeSchema,
     KaironRecordPageEnvelopeSchema,
     KaironTeamRecordQuerySchema,
     ManualRecordPageEnvelopeSchema,
@@ -42,6 +43,7 @@ from app.reports.services import (
     get_efficiency,
     get_coding_dashboard,
     get_kairon_lead_team_range,
+    get_kairon_manager_team_range,
     get_manual_team_day,
     get_manual_team_range,
     resolve_dashboard_window,
@@ -179,6 +181,20 @@ class ReportsKaironTeamRange(MethodView):
         }
 
 
+@bp.route("/reports/kairon/manager-team-range")
+class ReportsKaironManagerTeamRange(MethodView):
+    @require_feature(REPORTS_FEATURE)
+    @require_role("manager")
+    @bp.arguments(ManualTeamRangeQuerySchema, location="query")
+    @bp.response(200, KaironManagerTeamRangeEnvelopeSchema)
+    def get(self, args):
+        return {
+            "status": 200,
+            "message": "Manager Kairon team production retrieved successfully.",
+            "data": get_kairon_manager_team_range(g.user, args["from_date"], args["to_date"]),
+        }
+
+
 @bp.route("/reports/kairon/team-holds")
 class ReportsKaironTeamHolds(MethodView):
     @require_feature(REPORTS_FEATURE)
@@ -206,11 +222,15 @@ class ReportsKaironTeamHolds(MethodView):
 @bp.route("/reports/kairon/team-records")
 class ReportsKaironTeamRecords(MethodView):
     @require_feature(REPORTS_FEATURE)
-    @require_role("lead")
+    @require_role_types("lead", "manager")
     @bp.arguments(KaironTeamRecordQuerySchema, location="query")
     @bp.response(200, KaironRecordPageEnvelopeSchema)
     def get(self, args):
-        if args["user_id"] != g.user.id and args["user_id"] not in lead_employee_user_ids(g.user.id):
+        if g.user.role.role_type.code == "manager":
+            member_ids = manager_team_user_ids(g.user.id)
+        else:
+            member_ids = [g.user.id, *lead_employee_user_ids(g.user.id)]
+        if args["user_id"] not in member_ids:
             abort(404, message="Team member not found.")
         query = (
             KaironChartRecord.query.join(KaironUploadBatch)

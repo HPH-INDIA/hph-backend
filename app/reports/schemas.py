@@ -143,6 +143,28 @@ KaironLeadTeamRangeEnvelopeSchema = envelope_schema(
 )
 
 
+class KaironManagerTeamCoderSchema(Schema):
+    user = fields.Nested(ManualTeamMemberSchema, dump_only=True)
+    summary = fields.Nested(KaironChartSummarySchema, dump_only=True)
+
+
+class KaironManagerTeamSchema(Schema):
+    lead = fields.Nested(ManualTeamMemberSchema, dump_only=True, allow_none=True)
+    lead_summary = fields.Nested(KaironChartSummarySchema, dump_only=True, data_key="leadSummary")
+    coders = fields.List(fields.Nested(KaironManagerTeamCoderSchema), dump_only=True)
+
+
+class KaironManagerTeamRangeSchema(Schema):
+    from_date = fields.Date(dump_only=True, data_key="fromDate")
+    to_date = fields.Date(dump_only=True, data_key="toDate")
+    teams = fields.List(fields.Nested(KaironManagerTeamSchema), dump_only=True)
+
+
+KaironManagerTeamRangeEnvelopeSchema = envelope_schema(
+    "KaironManagerTeamRangeEnvelopeSchema", fields.Nested(KaironManagerTeamRangeSchema)
+)
+
+
 class ManualTeamCoderSchema(Schema):
     user = fields.Nested(ManualTeamMemberSchema, dump_only=True)
     record = fields.Nested(ManualDailyRecordSchema, dump_only=True, allow_none=True)

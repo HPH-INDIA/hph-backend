@@ -41,6 +41,9 @@ def test_kairon_lead_range_separates_own_charts_and_direct_coders(api_client):
     no_charts = member("no-charts", "employee", lead)
     other_lead = member("other-lead", "lead", manager)
     outsider = member("outsider", "employee", other_lead)
+    external_manager = member("external-manager", "manager")
+    external_lead = member("external-lead", "lead", external_manager)
+    external_coder = member("external-coder", "employee", external_lead)
     batch = KaironUploadBatch(as_of_date=dt.date(2026, 9, 30), uploaded_by_id=manager.id, status="completed")
     superseded = KaironUploadBatch(
         as_of_date=dt.date(2026, 9, 29), uploaded_by_id=manager.id,
@@ -71,6 +74,7 @@ def test_kairon_lead_range_separates_own_charts_and_direct_coders(api_client):
     chart(coder, day_one, status="On Hold", upload=superseded)
     chart(outsider, day_one)
     chart(outsider, day_one, status="On Hold")
+    chart(external_coder, day_one)
     chart(coder, dt.date(2026, 9, 12))
     db.session.commit()
 
@@ -138,9 +142,23 @@ def test_kairon_lead_range_separates_own_charts_and_direct_coders(api_client):
 
     assert api_client.login(coder.email, "test-password")[0] == 200
     assert api_client.get("/api/reports/kairon/team-range?fromDate=2026-09-10&toDate=2026-09-11")[0] == 403
+    assert api_client.get("/api/reports/kairon/manager-team-range?fromDate=2026-09-10&toDate=2026-09-11")[0] == 403
     assert api_client.get("/api/reports/kairon/team-holds")[0] == 403
     assert api_client.get(records_url)[0] == 403
     assert api_client.login(manager.email, "test-password")[0] == 200
     assert api_client.get("/api/reports/kairon/team-range?fromDate=2026-09-10&toDate=2026-09-11")[0] == 403
     assert api_client.get("/api/reports/kairon/team-holds")[0] == 403
-    assert api_client.get(records_url)[0] == 403
+    status, body = api_client.get("/api/reports/kairon/manager-team-range?fromDate=2026-09-10&toDate=2026-09-11")
+    assert status == 200, body
+    teams = {team["lead"]["id"]: team for team in body["data"]["teams"] if team["lead"]}
+    assert set(teams) == {lead.id, other_lead.id}
+    assert teams[lead.id]["leadSummary"]["total"] == 2
+    assert {entry["user"]["id"]: entry["summary"]["total"] for entry in teams[lead.id]["coders"]} == {
+        coder.id: 3, no_charts.id: 0,
+    }
+    assert {entry["user"]["id"]: entry["summary"]["total"] for entry in teams[other_lead.id]["coders"]} == {
+        outsider.id: 1,
+    }
+    assert api_client.get(records_url)[0] == 200
+    assert api_client.get(f"/api/reports/kairon/team-records?userId={lead.id}&fromDate=2026-09-10&toDate=2026-09-11")[0] == 200
+    assert api_client.get(f"/api/reports/kairon/team-records?userId={external_coder.id}&fromDate=2026-09-10&toDate=2026-09-11")[0] == 404
