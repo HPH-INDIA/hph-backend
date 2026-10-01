@@ -49,22 +49,27 @@ def test_kairon_lead_range_separates_own_charts_and_direct_coders(api_client):
     db.session.add_all([batch, superseded])
     db.session.flush()
 
-    def chart(user, day, status="Completed", upload=batch):
+    def chart(user, day, status="Completed", upload=batch, program="PVP"):
         db.session.add(KaironChartRecord(
-            batch_id=upload.id, program="PVP", level="1LR", status=status,
+            batch_id=upload.id, program=program, level="1LR", status=status,
             user_id=user.id, coding_analyst_raw=f"{user.first_name} {user.last_name}",
             actions=1, created_date=day, completed_date=day if status == "Completed" else None,
         ))
 
     day_one, day_two = dt.date(2026, 9, 10), dt.date(2026, 9, 11)
     chart(lead, day_one)
-    chart(lead, day_two)
+    chart(lead, day_two, program="Foundation")
     chart(coder, day_one)
     chart(coder, day_one)
-    chart(coder, day_two)
+    chart(coder, day_two, program="Foundation")
     chart(coder, day_one, status="Active")
     chart(coder, day_one, upload=superseded)
+    chart(lead, day_one, status="On Hold")
+    chart(coder, day_one, status="On Hold")
+    chart(no_charts, day_one, status="On Hold")
+    chart(coder, day_one, status="On Hold", upload=superseded)
     chart(outsider, day_one)
+    chart(outsider, day_one, status="On Hold")
     chart(coder, dt.date(2026, 9, 12))
     db.session.commit()
 
@@ -78,14 +83,20 @@ def test_kairon_lead_range_separates_own_charts_and_direct_coders(api_client):
         {"date": "2026-09-11", "count": 1},
         {"date": "2026-09-10", "count": 1},
     ]
+    assert report["leadSummary"] == {"pvp": 1, "foundation": 1, "onHold": 1, "total": 2}
     assert {item["user"]["id"]: (item["count"], item["days"]) for item in report["coders"]} == {
         coder.id: (3, [{"date": "2026-09-11", "count": 1}, {"date": "2026-09-10", "count": 2}]),
         no_charts.id: (0, []),
+    }
+    assert {item["user"]["id"]: item["summary"] for item in report["coders"]} == {
+        coder.id: {"pvp": 2, "foundation": 1, "onHold": 1, "total": 3},
+        no_charts.id: {"pvp": 0, "foundation": 0, "onHold": 1, "total": 0},
     }
 
     status, body = api_client.get("/api/reports/kairon/team-range?fromDate=2026-09-11&toDate=2026-09-11")
     assert status == 200, body
     assert body["data"]["leadDays"] == [{"date": "2026-09-11", "count": 1}]
+    assert body["data"]["leadSummary"] == {"pvp": 0, "foundation": 1, "onHold": 1, "total": 1}
     assert {item["user"]["id"]: item["count"] for item in body["data"]["coders"]} == {
         coder.id: 1, no_charts.id: 0,
     }

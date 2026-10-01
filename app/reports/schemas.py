@@ -111,10 +111,18 @@ class ManualTeamMemberSchema(Schema):
     emp_id = fields.String(dump_only=True, data_key="empId")
 
 
+class KaironChartSummarySchema(Schema):
+    pvp = fields.Integer(dump_only=True)
+    foundation = fields.Integer(dump_only=True)
+    on_hold = fields.Integer(dump_only=True, data_key="onHold")
+    total = fields.Integer(dump_only=True)
+
+
 class KaironTeamCoderSchema(Schema):
     user = fields.Nested(ManualTeamMemberSchema, dump_only=True)
     days = fields.List(fields.Nested(KaironCompletedDailyCountSchema), dump_only=True)
     count = fields.Integer(dump_only=True)
+    summary = fields.Nested(KaironChartSummarySchema, dump_only=True)
 
 
 class KaironLeadTeamRangeSchema(Schema):
@@ -122,6 +130,7 @@ class KaironLeadTeamRangeSchema(Schema):
     to_date = fields.Date(dump_only=True, data_key="toDate")
     lead = fields.Nested(ManualTeamMemberSchema, dump_only=True)
     lead_days = fields.List(fields.Nested(KaironCompletedDailyCountSchema), dump_only=True, data_key="leadDays")
+    lead_summary = fields.Nested(KaironChartSummarySchema, dump_only=True, data_key="leadSummary")
     coders = fields.List(fields.Nested(KaironTeamCoderSchema), dump_only=True)
 
 

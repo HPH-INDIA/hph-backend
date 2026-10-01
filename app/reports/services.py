@@ -550,7 +550,7 @@ def get_manual_team_day(viewer, record_date):
 
 
 def get_kairon_lead_team_range(lead, from_date, to_date):
-    """Completed charts for a lead and direct coders, separated by person/day."""
+    """Completed production and current holds for a lead and direct coders."""
     coder_ids = lead_employee_user_ids(lead.id)
     coders = (
         User.query.filter(User.id.in_(coder_ids))
@@ -577,6 +577,51 @@ def get_kairon_lead_team_range(lead, from_date, to_date):
     ):
         grouped.setdefault(user_id, []).append({"date": completed_date, "count": count})
 
+    summaries = {}
+
+    def summary_for(user_id):
+        return summaries.setdefault(user_id, {"pvp": 0, "foundation": 0, "on_hold": 0, "total": 0})
+
+    for user_id, program, count in (
+        db.session.query(
+            KaironChartRecord.user_id,
+            KaironChartRecord.program,
+            func.count(KaironChartRecord.id),
+        )
+        .join(KaironUploadBatch, KaironChartRecord.batch_id == KaironUploadBatch.id)
+        .filter(
+            KaironUploadBatch.superseded_at.is_(None),
+            KaironChartRecord.status == "Completed",
+            KaironChartRecord.completed_date >= from_date,
+            KaironChartRecord.completed_date <= to_date,
+            KaironChartRecord.user_id.in_([lead.id, *coder_ids]),
+        )
+        .group_by(KaironChartRecord.user_id, KaironChartRecord.program)
+        .all()
+    ):
+        summary = summary_for(user_id)
+        summary["total"] += count
+        normalized_program = program.strip().upper()
+        if normalized_program == "PVP":
+            summary["pvp"] += count
+        elif "FOUNDATION" in normalized_program:
+            summary["foundation"] += count
+
+    # Hold is current inventory: On Hold records have no completion date and
+    # must not be mixed into the selected period's completed production.
+    for user_id, count in (
+        db.session.query(KaironChartRecord.user_id, func.count(KaironChartRecord.id))
+        .join(KaironUploadBatch, KaironChartRecord.batch_id == KaironUploadBatch.id)
+        .filter(
+            KaironUploadBatch.superseded_at.is_(None),
+            KaironChartRecord.status == "On Hold",
+            KaironChartRecord.user_id.in_([lead.id, *coder_ids]),
+        )
+        .group_by(KaironChartRecord.user_id)
+        .all()
+    ):
+        summary_for(user_id)["on_hold"] = count
+
     def days_for(user_id):
         return sorted(grouped.get(user_id, []), key=lambda day: day["date"], reverse=True)
 
@@ -589,13 +634,19 @@ def get_kairon_lead_team_range(lead, from_date, to_date):
     for coder in coders:
         if eligible(coder):
             days = days_for(coder.id)
-            coder_entries.append({"user": coder, "days": days, "count": sum(day["count"] for day in days)})
+            coder_entries.append({
+                "user": coder,
+                "days": days,
+                "count": sum(day["count"] for day in days),
+                "summary": summary_for(coder.id),
+            })
 
     return {
         "from_date": from_date,
         "to_date": to_date,
         "lead": lead,
         "lead_days": days_for(lead.id),
+        "lead_summary": summary_for(lead.id),
         "coders": coder_entries,
     }
 
