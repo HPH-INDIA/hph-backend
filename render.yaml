@@ -24,6 +24,8 @@ services:
         sync: false
       - key: SUPABASE_IMPORT_BUCKET
         value: hph-imports
+      - key: IMPORT_EMBEDDED_PROCESSING
+        value: "true"
       - key: IMPORT_MAX_FILE_BYTES
         value: "50000000"
       - key: SESSION_COOKIE_SECURE
@@ -61,40 +63,8 @@ services:
       - key: CORS_ALLOWED_ORIGINS
         value: https://hph.onrender.com
       - key: WEB_CONCURRENCY
-        value: "2"
+        value: "1"
       - key: GUNICORN_THREADS
         value: "4"
       - key: GUNICORN_TIMEOUT
         value: "120"
-
-  # Render background workers require a paid plan. Provision only during rollout.
-  - type: worker
-    name: hph-import-worker
-    runtime: docker
-    plan: starter
-    region: singapore
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    dockerCommand: python -m flask --app run:app process-file-imports
-    autoDeployTrigger: commit
-    envVars:
-      - key: DATABASE_URL
-        sync: false
-      - key: SECRET_KEY
-        sync: false
-      - key: ENCRYPTION_MASTER_KEY
-        sync: false
-      - key: KAIRON_IDENTITY_KEY
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_STORAGE_SECRET_KEY
-        sync: false
-      - key: SUPABASE_IMPORT_BUCKET
-        value: hph-imports
-      - key: IMPORT_MAX_FILE_BYTES
-        value: "50000000"
-      - key: EMAIL_SUPPRESS_SEND
-        value: "true"
-      - key: EMAIL_VALIDATE_CONFIG
-        value: "false"

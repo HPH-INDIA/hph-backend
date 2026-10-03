@@ -4,6 +4,7 @@ from flask_smorest import abort
 from app.auth import require_feature, require_role
 from app.extensions import db
 from app.storage_imports import bp
+from app.storage_imports.embedded import kick_import_processing
 from app.storage_imports.models import StorageImport
 from app.storage_imports.schemas import PrepareSchema, CompleteSchema, PreparedEnvelope, ProgressEnvelope, ListEnvelope
 from app.storage_imports.services import prepare, upload_complete, progress, retry, abandon
@@ -23,7 +24,10 @@ class Imports(MethodView):
     @bp.response(200, ListEnvelope)
     def get(self):
         jobs = StorageImport.query.filter_by(uploaded_by_id=g.user.id).order_by(StorageImport.created_at.desc()).limit(20).all()
-        return {"status": 200, "message": "File imports retrieved.", "data": [progress(job) for job in jobs]}
+        result = [progress(job) for job in jobs]
+        if any(job.status in ("uploading", "queued", "processing") for job in jobs):
+            kick_import_processing()
+        return {"status": 200, "message": "File imports retrieved.", "data": result}
 
 
 def owned(import_id):
@@ -39,7 +43,11 @@ class ImportProgress(MethodView):
     @require_role("manager")
     @bp.response(200, ProgressEnvelope)
     def get(self, import_id):
-        return {"status": 200, "message": "Import progress retrieved.", "data": progress(owned(import_id))}
+        job = owned(import_id)
+        result = progress(job)
+        if job.status in ("uploading", "queued", "processing"):
+            kick_import_processing()
+        return {"status": 200, "message": "Import progress retrieved.", "data": result}
 
 
 @bp.route("/file-imports/<string:import_id>/upload-complete")
@@ -49,7 +57,9 @@ class ImportComplete(MethodView):
     @bp.arguments(CompleteSchema)
     @bp.response(202, ProgressEnvelope)
     def post(self, data, import_id):
-        return {"status": 202, "message": "Import queued.", "data": upload_complete(owned(import_id), data)}
+        result = upload_complete(owned(import_id), data)
+        kick_import_processing()
+        return {"status": 202, "message": "Import queued.", "data": result}
 
 
 @bp.route("/file-imports/<string:import_id>/retry")
@@ -58,7 +68,9 @@ class ImportRetry(MethodView):
     @require_role("manager")
     @bp.response(202, ProgressEnvelope)
     def post(self, import_id):
-        return {"status": 202, "message": "Import queued.", "data": retry(owned(import_id))}
+        result = retry(owned(import_id))
+        kick_import_processing()
+        return {"status": 202, "message": "Import queued.", "data": result}
 
 
 @bp.route("/file-imports/<string:import_id>/abandon")

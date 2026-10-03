@@ -58,6 +58,7 @@ class Config:
     SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
     SUPABASE_STORAGE_SECRET_KEY = os.environ.get("SUPABASE_STORAGE_SECRET_KEY", "")
     SUPABASE_IMPORT_BUCKET = os.environ.get("SUPABASE_IMPORT_BUCKET", "hph-imports")
+    IMPORT_EMBEDDED_PROCESSING = _env_bool("IMPORT_EMBEDDED_PROCESSING")
     IMPORT_MAX_FILE_BYTES = int(os.environ.get("IMPORT_MAX_FILE_BYTES", "50000000"))
 
     # Celery: key-rotation Beat schedule (§4b) and outbound mail (§5).

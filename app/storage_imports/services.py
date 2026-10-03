@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+from io import BytesIO
 from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 
@@ -143,15 +144,16 @@ def decode_blocks(job, contents):
     schema = KaironImportRowSchema() if job.kind == "kairon" else ManualImportRowSchema()
     aes = AESGCM(unwrap_key(job.wrapped_key))
     total = 0
-    blocks = []
+    previous_size = BLOCK_ROWS
     manual_keys = set()
-    for index, line in enumerate(contents.splitlines()):
+    for index, line in enumerate(BytesIO(contents)):
+        line = line.rstrip(b"\r\n")
         encrypted = base64.b64decode(line, validate=True)
         plain = aes.decrypt(encrypted[:12], encrypted[12:], f"hph-import:v1:{job.id}:{index}".encode())
         raw_rows = json.loads(plain)
         if not isinstance(raw_rows, list) or not 1 <= len(raw_rows) <= BLOCK_ROWS:
             raise ValueError("Invalid file block size.")
-        if blocks and len(blocks[-1]) != BLOCK_ROWS:
+        if previous_size != BLOCK_ROWS:
             raise ValueError("Only the final block may contain fewer than 1,000 rows.")
         rows = []
         for row_index, row in enumerate(raw_rows):
@@ -168,7 +170,8 @@ def decode_blocks(job, contents):
         total += len(rows)
         if total > job.total_rows:
             raise ValueError("File contains more rows than declared.")
-        blocks.append(rows)
+        previous_size = len(rows)
+        yield rows, hashlib.sha256(line).hexdigest()
     if total != job.total_rows:
         raise ValueError("File row count does not match the declared total.")
     if job.kind == "manual":
@@ -184,7 +187,6 @@ def decode_blocks(job, contents):
                 raise ValueError("One or more users in this file no longer exist.")
             if not user.is_active and user.last_working_day and date > user.last_working_day:
                 raise ValueError("One or more rows fall after the user's last working day.")
-    return blocks
 
 
 @contextmanager
@@ -192,7 +194,7 @@ def kind_lock(kind):
     # Dedicated connection keeps a session advisory lock across importer commits.
     # PostgreSQL releases this automatically if the worker dies.
     with db.engine.connect() as connection:
-        key = 73001 if kind == "kairon" else 73002
+        key = {"kairon": 73001, "manual": 73002, "embedded": 73003}[kind]
         locked = connection.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": key}).scalar()
         try:
             yield bool(locked)
@@ -218,8 +220,9 @@ def process_job(job):
         checksum = hashlib.sha256(contents).hexdigest()
         if job.file_checksum and not hmac.compare_digest(checksum, job.file_checksum):
             raise ValueError("The uploaded file checksum does not match.")
-        blocks = decode_blocks(job, contents)
-        lines = contents.splitlines()
+        # First pass validates the entire file before writes, retaining one block.
+        for _ in decode_blocks(job, contents):
+            pass
         job.file_size, job.file_checksum = len(contents), checksum
         job.status, job.error = "processing", None
         job.attempts += 1
@@ -231,13 +234,12 @@ def process_job(job):
             db.session.commit()
         model = KaironUploadBatch if job.kind == "kairon" else ManualImportBatch
         batch = db.session.get(model, job.batch_id)
-        for index, rows in enumerate(blocks):
+        for index, (rows, block_hash) in enumerate(decode_blocks(job, contents)):
             # Each chunk commits records, history and batch progress atomically.
             # Resumption consults authoritative batch progress, not a browser offset.
             end = min((index + 1) * BLOCK_ROWS, job.total_rows)
             if batch.processed_count >= end:
                 continue
-            block_hash = hashlib.sha256(lines[index]).hexdigest()
             if job.kind == "kairon":
                 batch, _ = process_import_chunk(batch.id, index, block_hash, rows)
             else:
