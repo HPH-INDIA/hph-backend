@@ -87,6 +87,12 @@ def create_app():
     from app.storage_imports import bp as storage_imports_bp
     api.register_blueprint(storage_imports_bp)
 
+    # Appraisal system (appraisal_system/): directory API, gateway to its microservices and
+    # Microsoft sign-in. Everything lives in that package; see appraisal_system/README.md.
+    from appraisal_system.access_bff import init_access_bff
+
+    init_access_bff(app, api)
+
     # Hook order is load-bearing: §4b's payload-decryption hook must run
     # BEFORE load_session, so the body is already plaintext by the time
     # load_session (and every view) reads it. before_request hooks run in

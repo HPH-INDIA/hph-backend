@@ -1,0 +1,2 @@
+# ruff.toml
+extend = "../ruff.toml"

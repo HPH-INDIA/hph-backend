@@ -1,0 +1,718 @@
+openapi: 3.0.1
+info:
+  title: Form Builder Server
+  description: >-
+    Micro-service that designs, versions and serves the forms HPH uses for appraisals. Admins
+    draft a form, publish it as an immutable version and assign it to one project and one or
+    more role types; the appraisal service resolves the published version that applies to each
+    participant and validates answers against it.
+
+
+    Every request must carry `Authorization: Bearer <token>`, a short-lived token signed by the
+    Access/BFF service for a signed-in user or by another HPH service, and the `caller_id`
+    header (the user's HPH id, or -1 for a service caller). Users additionally need the
+    `form_builder` feature (read or write).
+  version: 1.0.0
+servers:
+  - url: http://localhost:5101
+paths:
+  /forms:
+    get:
+      tags:
+        - Forms
+      summary: List forms
+      description: >-
+        Returns forms, most recently changed first. Filtering by project or role type only
+        returns forms with a matching active assignment. Requires `form_builder` read.
+      operationId: handlers.forms.list_forms
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/FormStatus"
+        - name: project_id
+          in: query
+          schema:
+            type: integer
+        - name: role_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/AssignableRoleType"
+      responses:
+        "200":
+          description: Forms
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FormSummary"
+        "403":
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - Forms
+      summary: Create a draft form
+      description: >-
+        Creates a draft that is blank, copied from a template (`from_template_id`) or seeded
+        with a supplied `definition`; sending both a template and a definition is rejected.
+        Drafts may be incomplete: `draft_errors` lists what must be fixed before publishing.
+        Requires `form_builder` write.
+      operationId: handlers.forms.create_form
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FormCreateRequest"
+      responses:
+        "201":
+          description: The created draft
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /forms/resolve:
+    get:
+      tags:
+        - Forms
+      summary: Resolve the published form for a project and role type
+      description: >-
+        Returns the latest published version of the form actively assigned to the project and
+        role type, or 404 when there is none. Used by the appraisal service when it launches a
+        cycle; also readable by users with `form_builder` read.
+      operationId: handlers.forms.resolve_form
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - name: project_id
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: role_type
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/AssignableRoleType"
+        - name: purpose
+          in: query
+          schema:
+            $ref: "#/components/schemas/FormPurpose"
+      responses:
+        "200":
+          description: The applicable published version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolvedForm"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /forms/{form_id}:
+    get:
+      tags:
+        - Forms
+      summary: Get a form with its draft, latest version and assignments
+      operationId: handlers.forms.get_form
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/form_id"
+      responses:
+        "200":
+          description: The form
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormDetail"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+    patch:
+      tags:
+        - Forms
+      summary: Update a form's name, description or draft definition
+      description: >-
+        Editing the definition of a published form only changes its draft; appraisals keep the
+        version they were launched with until the form is published again. Archived forms
+        cannot be edited. Requires `form_builder` write.
+      operationId: handlers.forms.update_form
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/form_id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FormUpdateRequest"
+      responses:
+        "200":
+          description: The updated form
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags:
+        - Forms
+      summary: Delete a never-published form
+      description: >-
+        Only forms without published versions can be deleted; published forms must be archived
+        so the appraisals that pin their versions keep working. Requires `form_builder` write.
+      operationId: handlers.forms.delete_form
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/form_id"
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessMessage"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /forms/{form_id}/publish:
+    post:
+      tags:
+        - Forms
+      summary: Publish the draft as the next immutable version
+      description: >-
+        Validates the draft and freezes it as version N+1. A draft with errors is rejected with
+        the list in `data.errors`; a draft identical to the latest version is rejected as having
+        nothing to publish. Requires `form_builder` write.
+      operationId: handlers.forms.publish_form
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/form_id"
+      responses:
+        "200":
+          description: The form with its new latest version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /forms/{form_id}/archive:
+    post:
+      tags:
+        - Forms
+      summary: Archive a form
+      description: >-
+        Archives the form and deactivates its assignments so new cycles stop using it; versions
+        already pinned by appraisals remain readable. Requires `form_builder` write.
+      operationId: handlers.forms.archive_form
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/form_id"
+      responses:
+        "200":
+          description: The archived form
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /forms/{form_id}/versions:
+    get:
+      tags:
+        - Versions
+      summary: List a form's published versions
+      operationId: handlers.forms.list_versions
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/form_id"
+      responses:
+        "200":
+          description: Versions, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FormVersionSummary"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /forms/{form_id}/versions/{version_no}:
+    get:
+      tags:
+        - Versions
+      summary: Get one published version of a form
+      operationId: handlers.forms.get_version
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/form_id"
+        - name: version_no
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: The version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormVersion"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /forms/{form_id}/assignments:
+    put:
+      tags:
+        - Forms
+      summary: Set the project and role types a form applies to
+      description: >-
+        Replaces the form's assignments with one project and the listed role types (FR-8).
+        Only `employee` and `lead` can take an appraisal form. An empty `role_type_codes` list
+        removes every assignment. Rejected when another form is already actively assigned to
+        the same project and role type. Requires `form_builder` write.
+      operationId: handlers.forms.set_assignments
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/form_id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignmentsRequest"
+      responses:
+        "200":
+          description: The form with its new assignments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+
+  /form-versions/{version_id}:
+    get:
+      tags:
+        - Versions
+      summary: Get a published version by id
+      operationId: handlers.versions.get_version_by_id
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/version_id"
+      responses:
+        "200":
+          description: The version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormVersion"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /form-versions/{version_id}/validate:
+    post:
+      tags:
+        - Versions
+      summary: Validate one stage's answers against a published version
+      description: >-
+        Checks answers for the `employee`, `lead` or `manager` stage. `draft` mode checks types
+        and limits only; `submit` mode also requires every required field of that stage. Only
+        fields of the given stage may be answered. Always answers 200 with `valid` and the
+        list of problems; used by the appraisal service on every save and submit.
+      operationId: handlers.versions.validate_answers
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/version_id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateAnswersRequest"
+      responses:
+        "200":
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidateAnswersResponse"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /form-templates:
+    get:
+      tags:
+        - Templates
+      summary: List the default form templates
+      operationId: handlers.templates.list_templates
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - name: purpose
+          in: query
+          schema:
+            $ref: "#/components/schemas/FormPurpose"
+      responses:
+        "200":
+          description: Templates, defaults first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FormTemplate"
+        "403":
+          $ref: "#/components/responses/Error"
+
+components:
+  parameters:
+    caller_id:
+      name: caller_id
+      in: header
+      required: true
+      description: HPH user id of the caller, matching the bearer token. -1 for service callers.
+      schema:
+        type: integer
+    form_id:
+      name: form_id
+      in: path
+      required: true
+      schema:
+        type: integer
+    version_id:
+      name: version_id
+      in: path
+      required: true
+      schema:
+        type: integer
+
+  responses:
+    Error:
+      description: Request rejected; see `code` and `message`
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+
+  schemas:
+    ErrorMessage:
+      type: object
+      properties:
+        data:
+          type: object
+          nullable: true
+          description: Detail such as `errors` (a list of `ValidationIssue`) or `conflicts`.
+        message:
+          type: string
+        success:
+          type: boolean
+        code:
+          type: string
+          example: INVALID_ARGUMENT
+
+    SuccessMessage:
+      type: object
+      properties:
+        message:
+          type: string
+        success:
+          type: boolean
+
+    FormStatus:
+      type: string
+      enum:
+        - draft
+        - published
+        - archived
+
+    FormPurpose:
+      type: string
+      enum:
+        - appraisal
+      default: appraisal
+
+    AssignableRoleType:
+      type: string
+      description: Role types that are appraised in v1.
+      enum:
+        - employee
+        - lead
+
+    FormDefinition:
+      type: object
+      description: >-
+        `{"sections": [...]}`. Each section has a `key`, `title`, optional `description`,
+        `filled_by` (`employee` or `reviewer`), `review_stage` (`lead` or `manager`, reviewer
+        sections only) and `fields`. Each field has a `key` (lowercase, unique in the form),
+        `type` (`short_text`, `long_text`, `number`, `rating`, `single_choice`, `multi_choice`,
+        `yes_no`, `date`), `label`, optional `help_text`, `required` and `ui`, plus
+        type-specific properties: `max_length` (text), `min`/`max`/`integer` (number), `scale`
+        `{min, max, labels}` (rating), `options` `[{value, label}]` and
+        `min_selected`/`max_selected` (choices), `min`/`max` as YYYY-MM-DD (date). Validated by
+        the service so every problem is reported at once.
+      additionalProperties: true
+
+    ValidationIssue:
+      type: object
+      properties:
+        path:
+          type: string
+          example: sections[0].fields[1].label
+        message:
+          type: string
+
+    Assignment:
+      type: object
+      properties:
+        project_id:
+          type: integer
+        role_type_code:
+          $ref: "#/components/schemas/AssignableRoleType"
+        active:
+          type: boolean
+
+    FormVersionSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        form_id:
+          type: integer
+        version_no:
+          type: integer
+        published_by:
+          type: integer
+        published_at:
+          type: string
+          format: date-time
+
+    FormVersion:
+      allOf:
+        - $ref: "#/components/schemas/FormVersionSummary"
+        - type: object
+          properties:
+            form_name:
+              type: string
+            purpose:
+              $ref: "#/components/schemas/FormPurpose"
+            definition:
+              $ref: "#/components/schemas/FormDefinition"
+
+    FormSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        purpose:
+          $ref: "#/components/schemas/FormPurpose"
+        status:
+          $ref: "#/components/schemas/FormStatus"
+        latest_version:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/FormVersionSummary"
+        has_unpublished_changes:
+          type: boolean
+        assignments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Assignment"
+        created_by:
+          type: integer
+        updated_by:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    FormDetail:
+      allOf:
+        - $ref: "#/components/schemas/FormSummary"
+        - type: object
+          properties:
+            draft_definition:
+              $ref: "#/components/schemas/FormDefinition"
+            draft_errors:
+              type: array
+              items:
+                $ref: "#/components/schemas/ValidationIssue"
+            version_count:
+              type: integer
+
+    FormCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          nullable: true
+          maxLength: 2000
+        purpose:
+          $ref: "#/components/schemas/FormPurpose"
+        from_template_id:
+          type: integer
+          nullable: true
+        definition:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/FormDefinition"
+
+    FormUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          nullable: true
+          maxLength: 2000
+        definition:
+          $ref: "#/components/schemas/FormDefinition"
+
+    AssignmentsRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - role_type_codes
+      properties:
+        project_id:
+          type: integer
+          nullable: true
+        role_type_codes:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssignableRoleType"
+
+    ResolvedForm:
+      type: object
+      properties:
+        form_id:
+          type: integer
+        form_name:
+          type: string
+        version_id:
+          type: integer
+        version_no:
+          type: integer
+        definition:
+          $ref: "#/components/schemas/FormDefinition"
+
+    ValidateAnswersRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - answers
+        - stage
+        - mode
+      properties:
+        answers:
+          type: object
+          additionalProperties: true
+          description: Field key to value; null clears a value.
+        stage:
+          type: string
+          enum:
+            - employee
+            - lead
+            - manager
+        mode:
+          type: string
+          enum:
+            - draft
+            - submit
+
+    ValidateAnswersResponse:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidationIssue"
+        normalized_answers:
+          type: object
+          additionalProperties: true
+
+    FormTemplate:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        purpose:
+          $ref: "#/components/schemas/FormPurpose"
+        is_default:
+          type: boolean
+        definition:
+          $ref: "#/components/schemas/FormDefinition"

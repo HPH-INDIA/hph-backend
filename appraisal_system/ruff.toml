@@ -1,0 +1,20 @@
+# ruff.toml - shared lint settings; Black runs first, line length 100.
+# Each service and common/ extend this file.
+line-length = 100
+
+[lint]
+select = ["F", "E", "W", "I"]
+# E501: Black handles line length. E711/E712: comparisons inside SQLAlchemy filters.
+# E402: config.py / main.py import order is deliberate.
+ignore = ["E501", "E711", "E712", "E402"]
+
+[lint.isort]
+force-sort-within-sections = false
+length-sort = false
+order-by-type = true
+known-first-party = ["app", "appraisal_system", "common"]
+known-local-folder = ["config"]
+lines-after-imports = 2
+combine-as-imports = true
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+no-lines-before = ["local-folder"]
