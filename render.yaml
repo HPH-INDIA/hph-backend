@@ -6,6 +6,7 @@ services:
     region: singapore
     dockerfilePath: ./Dockerfile
     dockerContext: .
+    dockerCommand: sh scripts/start-web.sh
     healthCheckPath: /healthz
     autoDeployTrigger: commit
     envVars:
@@ -17,6 +18,14 @@ services:
         sync: false
       - key: KAIRON_IDENTITY_KEY
         sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_STORAGE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_IMPORT_BUCKET
+        value: hph-imports
+      - key: IMPORT_MAX_FILE_BYTES
+        value: "50000000"
       - key: SESSION_COOKIE_SECURE
         value: "true"
       - key: TEMP_PASSWORD_EXPIRY_HOURS
@@ -57,3 +66,35 @@ services:
         value: "4"
       - key: GUNICORN_TIMEOUT
         value: "120"
+
+  # Render background workers require a paid plan. Provision only during rollout.
+  - type: worker
+    name: hph-import-worker
+    runtime: docker
+    plan: starter
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: python -m flask --app run:app process-file-imports
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: ENCRYPTION_MASTER_KEY
+        sync: false
+      - key: KAIRON_IDENTITY_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_STORAGE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_IMPORT_BUCKET
+        value: hph-imports
+      - key: IMPORT_MAX_FILE_BYTES
+        value: "50000000"
+      - key: EMAIL_SUPPRESS_SEND
+        value: "true"
+      - key: EMAIL_VALIDATE_CONFIG
+        value: "false"

@@ -35,6 +35,8 @@ from app.users.models import Project, User
 # seed migrations (via migrate_upgrade() below) and are never touched by a
 # test, so they're set up once per session rather than per test.
 _COHORT_MODULE_TABLES_FK_ORDER = (
+    "storage_import_slots",
+    "storage_imports",
     "login_hour_records",
     "login_hours_upload_batches",
     "user_stage_periods",
@@ -100,6 +102,8 @@ def _clean_cohorts_tables(app):
         yield
         for table in _COHORT_MODULE_TABLES_FK_ORDER:
             db.session.execute(text(f"DELETE FROM {table}"))
+        from app.storage_imports.models import StorageImportSlot
+        db.session.add_all([StorageImportSlot(kind="kairon"), StorageImportSlot(kind="manual")])
         db.session.execute(text("DELETE FROM stage_target_rules"))
         superadmin = User.query.join(Role).join(RoleType).filter(RoleType.code == "super_admin").first()
         for stage_code, target in _SEED_STAGE_TARGETS.items():

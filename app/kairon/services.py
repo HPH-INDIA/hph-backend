@@ -206,7 +206,7 @@ def import_batch(as_of_date, rows, uploaded_by_id, source_filename=None):
     return batch
 
 
-def start_cumulative_import(source_filename, file_checksum, total_rows, uploaded_by_id):
+def start_cumulative_import(source_filename, file_checksum, total_rows, uploaded_by_id, *, commit=True):
     """Start a resumable cumulative import; no chart data is written yet."""
     batch = KaironUploadBatch(
         as_of_date=None,
@@ -218,7 +218,10 @@ def start_cumulative_import(source_filename, file_checksum, total_rows, uploaded
         status="uploading",
     )
     db.session.add(batch)
-    db.session.commit()
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
     return batch
 
 

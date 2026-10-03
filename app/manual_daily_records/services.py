@@ -277,7 +277,7 @@ def import_manual_daily_records(file_base64, source_filename, record_date, uploa
     }
 
 
-def start_manual_import(source_filename, file_checksum, total_rows, uploaded_by_id):
+def start_manual_import(source_filename, file_checksum, total_rows, uploaded_by_id, *, commit=True):
     batch = ManualImportBatch(
         source_filename=source_filename,
         file_checksum=file_checksum.lower(),
@@ -286,7 +286,10 @@ def start_manual_import(source_filename, file_checksum, total_rows, uploaded_by_
         status="uploading",
     )
     db.session.add(batch)
-    db.session.commit()
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
     return batch
 
 

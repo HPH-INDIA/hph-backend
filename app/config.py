@@ -54,6 +54,12 @@ class Config:
     SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE", True)
     TEMP_PASSWORD_EXPIRY_HOURS = int(os.environ.get("TEMP_PASSWORD_EXPIRY_HOURS", "72"))
 
+    # Private import storage. Secret is server-only; never a VITE_* variable.
+    SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+    SUPABASE_STORAGE_SECRET_KEY = os.environ.get("SUPABASE_STORAGE_SECRET_KEY", "")
+    SUPABASE_IMPORT_BUCKET = os.environ.get("SUPABASE_IMPORT_BUCKET", "hph-imports")
+    IMPORT_MAX_FILE_BYTES = int(os.environ.get("IMPORT_MAX_FILE_BYTES", "50000000"))
+
     # Celery: key-rotation Beat schedule (§4b) and outbound mail (§5).
     CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
     CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
