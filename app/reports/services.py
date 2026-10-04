@@ -442,6 +442,7 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
                         "productive_minutes": productive_minutes,
                         "target_minutes": target_minutes,
                         "adjusted_target": adjusted_target,
+                        "adjusted_cpd": manual.adjusted_cpd if manual is not None else None,
                         "manual_efficiency_percent": manual_efficiency_percent,
                         "kairon_efficiency_percent": kairon_efficiency_percent,
                         "manual_cpd": manual_cpd,

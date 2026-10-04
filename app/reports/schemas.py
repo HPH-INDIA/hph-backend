@@ -338,6 +338,9 @@ class DailyEfficiencySchema(Schema):
     productive_minutes = fields.Integer(dump_only=True, allow_none=True, data_key="productiveMinutes")
     target_minutes = fields.Integer(dump_only=True, allow_none=True, data_key="targetMinutes")
     adjusted_target = fields.Decimal(dump_only=True, allow_none=True, as_string=True, data_key="adjustedTarget")
+    adjusted_cpd = fields.Decimal(
+        dump_only=True, allow_none=True, as_string=True, places=2, data_key="adjustedCpd"
+    )
     manual_efficiency_percent = fields.Decimal(
         dump_only=True, allow_none=True, as_string=True, data_key="manualEfficiencyPercent"
     )
