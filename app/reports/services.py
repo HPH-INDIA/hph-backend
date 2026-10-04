@@ -12,6 +12,7 @@ from sqlalchemy import case, func
 from app.cohorts.models import Cohort, CohortMembership, StageTargetRule, UserStagePeriod
 from app.extensions import db
 from app.kairon.models import KaironChartRecord, KaironUploadBatch
+from app.kairon.production import unique_completed_production
 from app.login_hours.models import LoginHourRecord
 from app.manual_daily_records.models import ManualDailyRecord
 from app.manual_daily_records.services import approve_record, manual_review_user_ids, reject_record
@@ -72,7 +73,9 @@ def get_monthly_goal(user, month_value=None):
 
     Weekends and configured office holidays never carry target. A manual
     record with eight or more leave hours removes that user's target for the
-    day. Stage targets remain date-effective, so a mid-month stage change is
+    day. The adjusted goal deducts saved manual CPD reductions on the remaining
+    workdays; it never recomputes daily CPD while reading. Stage targets remain
+    date-effective, so a mid-month stage change is
     reflected without rewriting history. Leads aggregate themselves and
     their direct reports; employees are always self-scoped.
     """
@@ -107,16 +110,16 @@ def get_monthly_goal(user, month_value=None):
         StageTargetRule.effective_from <= month_end,
         db.or_(StageTargetRule.effective_to.is_(None), StageTargetRule.effective_to > month_start),
     ).all()
+    manual_rows = ManualDailyRecord.query.filter(
+        ManualDailyRecord.user_id.in_(member_ids),
+        ManualDailyRecord.record_date >= month_start,
+        ManualDailyRecord.record_date <= month_end,
+        ManualDailyRecord.status != "rejected",
+    ).all() if member_ids else []
+    manual_by_day = {(row.user_id, row.record_date): row for row in manual_rows}
     full_leave_days = {
-        (row.user_id, row.record_date)
-        for row in ManualDailyRecord.query.filter(
-            ManualDailyRecord.user_id.in_(member_ids),
-            ManualDailyRecord.record_date >= month_start,
-            ManualDailyRecord.record_date <= month_end,
-            ManualDailyRecord.status != "rejected",
-            ManualDailyRecord.leave_hours >= Decimal("8"),
-        ).all()
-    } if member_ids else set()
+        (row.user_id, row.record_date) for row in manual_rows if row.leave_hours >= Decimal("8")
+    }
 
     periods_by_user = {}
     for period in periods:
@@ -129,6 +132,7 @@ def get_monthly_goal(user, month_value=None):
     eligible_days = 0
     leave_days_excluded = 0
     targets_by_user = {member.id: 0 for member in members}
+    adjusted_targets_by_user = {member.id: Decimal("0.00") for member in members}
     for member in members:
         employment_end = min(month_end, member.last_working_day) if member.last_working_day else month_end
         work_date = month_start
@@ -159,6 +163,16 @@ def get_monthly_goal(user, month_value=None):
                         eligible_days += 1
                         target_charts += rule.daily_target
                         targets_by_user[member.id] += rule.daily_target
+                        adjusted_daily_target = Decimal(rule.daily_target)
+                        record = manual_by_day.get((member.id, work_date))
+                        if (record is not None and record.daily_target is not None
+                                and record.adjusted_cpd is not None):
+                            # The saved stage target is the basis for its saved
+                            # reduction. Clamp to zero if a later rule edit has
+                            # lowered the calendar-day target below that reduction.
+                            reduction = max(Decimal("0"), record.daily_target - record.adjusted_cpd)
+                            adjusted_daily_target = max(Decimal("0"), adjusted_daily_target - reduction)
+                        adjusted_targets_by_user[member.id] += adjusted_daily_target
             work_date += timedelta(days=1)
 
     completed_through = min(month_end, date.today())
@@ -173,6 +187,7 @@ def get_monthly_goal(user, month_value=None):
             .filter(
                 KaironUploadBatch.superseded_at.is_(None),
                 KaironChartRecord.status == "Completed",
+                unique_completed_production(),
                 KaironChartRecord.user_id.in_(member_ids),
                 KaironChartRecord.completed_date >= month_start,
                 KaironChartRecord.completed_date <= completed_through,
@@ -211,6 +226,9 @@ def get_monthly_goal(user, month_value=None):
         "user_count": len(members),
         "completed_charts": completed_charts,
         "manual_charts": sum(manual_by_user.values()),
+        "adjusted_target_charts": sum(adjusted_targets_by_user.values(), Decimal("0.00")),
+        "adjusted_difference": sum(adjusted_targets_by_user.values(), Decimal("0.00"))
+            - sum(manual_by_user.values()),
         "users": [
             {
                 "user_id": member.id,
@@ -218,6 +236,8 @@ def get_monthly_goal(user, month_value=None):
                 "manual_charts": manual_by_user.get(member.id, 0),
                 "completed_charts": completed_by_user.get(member.id, 0),
                 "target_charts": targets_by_user[member.id],
+                "adjusted_target_charts": adjusted_targets_by_user[member.id],
+                "adjusted_difference": adjusted_targets_by_user[member.id] - manual_by_user.get(member.id, 0),
                 "difference": targets_by_user[member.id] - completed_by_user.get(member.id, 0),
             }
             for member in members
@@ -280,6 +300,7 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
         .filter(
             KaironUploadBatch.superseded_at.is_(None),
             KaironChartRecord.status == "Completed",
+            unique_completed_production(),
             KaironChartRecord.user_id.in_(user_ids),
             KaironChartRecord.completed_date >= from_date,
             KaironChartRecord.completed_date <= to_date,
@@ -565,6 +586,7 @@ def _kairon_user_summaries(user_ids, from_date, to_date):
         .filter(
             KaironUploadBatch.superseded_at.is_(None),
             KaironChartRecord.status == "Completed",
+            unique_completed_production(),
             KaironChartRecord.completed_date >= from_date,
             KaironChartRecord.completed_date <= to_date,
             KaironChartRecord.user_id.in_(user_ids),
@@ -616,6 +638,7 @@ def get_kairon_lead_team_range(lead, from_date, to_date):
         .filter(
             KaironUploadBatch.superseded_at.is_(None),
             KaironChartRecord.status == "Completed",
+            unique_completed_production(),
             KaironChartRecord.completed_date >= from_date,
             KaironChartRecord.completed_date <= to_date,
             KaironChartRecord.user_id.in_([lead.id, *coder_ids]),
@@ -850,6 +873,7 @@ def get_coding_dashboard(from_date, to_date, program=None, lead_id=None, cohort_
         .filter(
             KaironUploadBatch.superseded_at.is_(None),
             KaironChartRecord.status == "Completed",
+            unique_completed_production(),
             KaironChartRecord.completed_date >= from_date,
             KaironChartRecord.completed_date <= to_date,
             db.or_(

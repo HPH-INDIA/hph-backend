@@ -36,7 +36,18 @@ def _request(method, path, payload=None, *, missing_ok=False, binary=False):
                 detail = {}
             if exc.code == 404 or str(detail.get("statusCode")) == "404":
                 return None
-        raise StorageUnavailable("Supabase Storage request failed. Please retry.") from None
+        hints = {
+            400: "Check the import bucket settings and SUPABASE_URL.",
+            401: "Check SUPABASE_STORAGE_SECRET_KEY; use a backend secret/service-role key.",
+            403: "Check the backend key permissions and that the key belongs to SUPABASE_URL.",
+            404: "Check SUPABASE_URL and that Storage is available for this project.",
+            429: "Storage request limit reached. Retry shortly.",
+        }
+        hint = hints.get(exc.code, "Supabase Storage may be unavailable. Retry shortly." if exc.code >= 500 else "Check the backend Storage configuration.")
+        # Status and operation only: provider response bodies can contain secrets
+        # or identifiers and must never be echoed to API clients or deploy logs.
+        operation = "bucket configuration" if path.startswith("/bucket") else "file operation"
+        raise StorageUnavailable(f"Supabase Storage {operation} failed (HTTP {exc.code}, {method}). {hint}") from None
     except (URLError, TimeoutError, OSError):
         raise StorageUnavailable("Supabase Storage is temporarily unavailable.") from None
 

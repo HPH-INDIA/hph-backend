@@ -64,3 +64,9 @@ Authenticated upload completion, retry, and progress/list requests start a daemo
 Keep the app tab open until processing finishes. Render Free can sleep after 15 minutes without inbound traffic and restart at any time. Legitimate progress polling lets the user track the active import; this is not a guarantee of uptime. When the service wakes, a manager's next progress request starts another pass and resumes committed chunks. Recovered failed jobs require Retry. File transfers interrupted before submission still require selecting the file again.
 
 CPU and the 512 MB memory limit are shared with Flask. Validate a representative 50,000-row file and normal API traffic in test before relying on this mode. Two-pass validation reduces row memory but still holds the encrypted file in memory, and completion calculations use existing application routines. No guarantee is made that every file within the storage size limit fits the web service's memory.
+
+## Completed-production counting
+
+Completed-production reports use the Daily Refresh HTML key: MBI fingerprint + level + completion date. Task creation date, practice, program and coder do not split a completion. A shared query selects the lowest-ID eligible completed record per key before applying report filters, keeping totals and detail lists consistent across dashboard, efficiency, monthly goals and team reports. Superseded batches are excluded. Legacy rows without an MBI fingerprint remain individually counted because their beneficiary identity cannot be reconstructed safely.
+
+This is reporting deduplication: chart identity/upsert rules and source/audit records remain unchanged. Stage-target calculations are independent and unchanged. No schema migration or re-upload is required to apply this report change.

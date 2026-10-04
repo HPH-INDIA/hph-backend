@@ -5,6 +5,7 @@ from flask_smorest import abort
 from app.auth import require_feature, require_role, require_role_types
 from app.extensions import db
 from app.kairon.models import KaironChartAnalystAction, KaironChartRecord, KaironUploadBatch
+from app.kairon.production import unique_completed_production
 from app.manual_daily_records.models import ManualDailyRecord
 from app.manual_daily_records.services import manual_review_user_ids
 from app.reports import bp
@@ -86,6 +87,7 @@ class ReportsKaironCompletedCounts(MethodView):
             .filter(
                 KaironUploadBatch.superseded_at.is_(None),
                 KaironChartRecord.status == "Completed",
+                unique_completed_production(),
                 KaironChartRecord.completed_date.isnot(None),
             )
         )
@@ -129,6 +131,7 @@ class ReportsKaironCompletedUsers(MethodView):
             .filter(
                 KaironUploadBatch.superseded_at.is_(None),
                 KaironChartRecord.status == "Completed",
+                unique_completed_production(),
                 KaironChartRecord.completed_date == args["completed_date"],
             )
         )
@@ -155,6 +158,7 @@ class ReportsKaironCompletedRecords(MethodView):
         query = KaironChartRecord.query.join(KaironUploadBatch).filter(
             KaironUploadBatch.superseded_at.is_(None),
             KaironChartRecord.status == "Completed",
+            unique_completed_production(),
             KaironChartRecord.completed_date == args["completed_date"],
             KaironChartRecord.user_id == args["user_id"],
         )
@@ -237,6 +241,7 @@ class ReportsKaironTeamRecords(MethodView):
             .filter(
                 KaironUploadBatch.superseded_at.is_(None),
                 KaironChartRecord.status == "Completed",
+                unique_completed_production(),
                 KaironChartRecord.user_id == args["user_id"],
                 KaironChartRecord.completed_date >= args["from_date"],
                 KaironChartRecord.completed_date <= args["to_date"],

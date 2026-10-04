@@ -97,6 +97,11 @@ class ManualDailyRecordSchema(Schema):
     created_at = fields.DateTime(dump_only=True, data_key="createdAt")
     updated_at = fields.DateTime(dump_only=True, data_key="updatedAt")
 
+    daily_target = fields.Integer(dump_only=True, allow_none=True, data_key="dailyTarget")
+    adjusted_cpd = fields.Decimal(
+        dump_only=True, as_string=True, places=2, allow_none=True, data_key="adjustedCpd"
+    )
+
     def get_meetings(self, record):
         if record.meetings is not None:
             return record.meetings

@@ -277,6 +277,10 @@ class MonthlyGoalUserSchema(Schema):
     manual_charts = fields.Integer(dump_only=True, data_key="manualCharts")
     completed_charts = fields.Integer(dump_only=True, data_key="completedCharts")
     target_charts = fields.Integer(dump_only=True, data_key="targetCharts")
+    adjusted_target_charts = fields.Decimal(
+        dump_only=True, as_string=True, places=2, data_key="adjustedTargetCharts"
+    )
+    adjusted_difference = fields.Decimal(dump_only=True, as_string=True, places=2, data_key="adjustedDifference")
     difference = fields.Integer(dump_only=True)
 
 
@@ -288,6 +292,10 @@ class MonthlyGoalSchema(Schema):
     user_count = fields.Integer(dump_only=True, data_key="userCount")
     completed_charts = fields.Integer(dump_only=True, data_key="completedCharts")
     target_charts = fields.Integer(dump_only=True, data_key="targetCharts")
+    adjusted_target_charts = fields.Decimal(
+        dump_only=True, as_string=True, places=2, data_key="adjustedTargetCharts"
+    )
+    adjusted_difference = fields.Decimal(dump_only=True, as_string=True, places=2, data_key="adjustedDifference")
     difference = fields.Integer(dump_only=True)
     calendar_working_days = fields.Integer(dump_only=True, data_key="calendarWorkingDays")
     eligible_days = fields.Integer(dump_only=True, data_key="eligibleDays")

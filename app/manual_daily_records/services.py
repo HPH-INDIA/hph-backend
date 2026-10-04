@@ -19,6 +19,7 @@ from app.manual_daily_records.models import (
     ManualImportBatch,
     ManualImportChunk,
 )
+from app.manual_daily_records.productivity import snapshot_manual_productivity
 from app.users.hierarchy import lead_employee_user_ids, manager_team_user_ids
 from app.users.models import User
 
@@ -238,6 +239,7 @@ def import_manual_daily_records(file_base64, source_filename, record_date, uploa
     created_count = 0
     updated_count = 0
     positive_user_ids = set()
+    changed_records = []
 
     for data in rows:
         user = data.pop("user")
@@ -252,9 +254,13 @@ def import_manual_daily_records(file_base64, source_filename, record_date, uploa
         record.pvp_count = data["production_count"]
         record.foundation_count = 0
         record.production_count = data["production_count"]
+        previous_meeting_hours = record.meeting_engagement_hours if record.id is not None else None
         for field in _ENTRY_FIELDS:
             setattr(record, field, data[field])
+        if previous_meeting_hours != record.meeting_engagement_hours:
+            record.meetings = None
         _set_submission_review(record, user, uploaded_by_id)
+        changed_records.append(record)
         if record.production_count > 0:
             positive_user_ids.add(user.id)
 
@@ -265,6 +271,7 @@ def import_manual_daily_records(file_base64, source_filename, record_date, uploa
         memberships = CohortMembership.query.filter(CohortMembership.user_id.in_(positive_user_ids)).all()
         for membership in memberships:
             compute_user_stage_periods(membership)
+    snapshot_manual_productivity(changed_records)
     db.session.commit()
     return {
         "record_date": record_date,
@@ -358,6 +365,7 @@ def process_manual_import_chunk(batch_id, chunk_number, checksum, rows, uploaded
     }
     counts = {"created": 0, "updated": 0, "unchanged": 0}
     positive_user_ids = set()
+    changed_records = []
     for row in rows:
         key = (row["user_id"], row["record_date"])
         record = existing_records.get(key)
@@ -381,6 +389,7 @@ def process_manual_import_chunk(batch_id, chunk_number, checksum, rows, uploaded
         if previous_meeting_hours != record.meeting_engagement_hours:
             record.meetings = None
         _set_submission_review(record, users_by_id[record.user_id], uploaded_by_id)
+        changed_records.append(record)
         if record.production_count > 0:
             positive_user_ids.add(record.user_id)
 
@@ -406,6 +415,7 @@ def process_manual_import_chunk(batch_id, chunk_number, checksum, rows, uploaded
         memberships = CohortMembership.query.filter(CohortMembership.user_id.in_(positive_user_ids)).all()
         for membership in memberships:
             compute_user_stage_periods(membership)
+    snapshot_manual_productivity(changed_records)
     db.session.commit()
     return batch, chunk
 
@@ -469,7 +479,7 @@ def upsert_own_record(user_id, data):
 
     _set_submission_review(record, db.session.get(User, user_id), user_id)
 
-    db.session.commit()
+    db.session.flush()
 
     # A user's first real production day is the authoritative M1 start for
     # future cohorts. Recompute from live facts so a lead and an employee
@@ -481,7 +491,8 @@ def upsert_own_record(user_id, data):
         membership = CohortMembership.query.filter_by(user_id=user_id).first()
         if membership is not None:
             compute_user_stage_periods(membership)
-            db.session.commit()
+    snapshot_manual_productivity([record])
+    db.session.commit()
     return record
 
 

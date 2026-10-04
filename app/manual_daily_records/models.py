@@ -67,6 +67,10 @@ class ManualDailyRecord(db.Model):
     # Nullable for historical rows. The scalar fields remain the aggregate/legacy view.
     meetings = db.Column(db.JSON, nullable=True)
 
+    # Snapshots calculated on submission/import; reads and reviews preserve them.
+    daily_target = db.Column(db.Integer, nullable=True)
+    adjusted_cpd = db.Column(db.Numeric(12, 2), nullable=True)
+
     status = db.Column(db.String(16), nullable=False, default="pending")
     reviewed_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     reviewed_at = db.Column(db.DateTime(timezone=True), nullable=True)
