@@ -69,51 +69,50 @@ def _month_window(month_value=None):
 
 
 def get_monthly_goal(user, month_value=None):
-    """Return the calendar-month completed-chart goal for an employee or lead.
-
-    Weekends and configured office holidays never carry target. A manual
-    record with eight or more leave hours removes that user's target for the
-    day. The adjusted goal deducts saved manual CPD reductions on the remaining
-    workdays; it never recomputes daily CPD while reading. Stage targets remain
-    date-effective, so a mid-month stage change is
-    reflected without rewriting history. Leads aggregate themselves and
-    their direct reports; employees are always self-scoped.
-    """
+    """Preserve the existing employee/lead monthly-goal contract."""
     month_start, month_end = _month_window(month_value)
-    role_type = user.role.role_type.code
-    members = [user]
-    if role_type == "lead":
-        members.extend(user.direct_reports)
+    is_lead = user.role.role_type.code == "lead"
+    members = [user, *user.direct_reports] if is_lead else [user]
+    return get_period_goal(members, month_start, month_end, "team" if is_lead else "self")
 
+
+def get_period_goal(members, from_date, to_date, scope="team"):
+    """Batch calendar targets for explicitly scoped users and a reporting period.
+
+    Exclude weekends, office holidays, and full leave; apply saved CPD
+    reductions without recomputing them. Keep date-effective stage targets
+    and employment end dates. Per-user totals allow separate QA/coder rollups
+    without repeating the source queries for each person.
+    """
     # Do not carry people into a month that begins after their employment.
     members = [
         member
         for member in members
-        if member.last_working_day is None or member.last_working_day >= month_start
+        if member.last_working_day is None or member.last_working_day >= from_date
     ]
     member_ids = [member.id for member in members]
     holidays = {
         row.holiday_date
         for row in OfficeHoliday.query.filter(
-            OfficeHoliday.holiday_date >= month_start,
-            OfficeHoliday.holiday_date <= month_end,
+            OfficeHoliday.holiday_date >= from_date,
+            OfficeHoliday.holiday_date <= to_date,
         ).all()
     }
     weekday_holidays = {day for day in holidays if day.weekday() < 5}
 
     periods = UserStagePeriod.query.filter(
         UserStagePeriod.user_id.in_(member_ids),
-        UserStagePeriod.start_date <= month_end,
-        db.or_(UserStagePeriod.end_date.is_(None), UserStagePeriod.end_date >= month_start),
+        UserStagePeriod.start_date <= to_date,
+        db.or_(UserStagePeriod.end_date.is_(None), UserStagePeriod.end_date >= from_date),
     ).all() if member_ids else []
     rules = StageTargetRule.query.filter(
-        StageTargetRule.effective_from <= month_end,
-        db.or_(StageTargetRule.effective_to.is_(None), StageTargetRule.effective_to > month_start),
+        StageTargetRule.effective_from <= to_date,
+        db.or_(StageTargetRule.effective_to.is_(None), StageTargetRule.effective_to > from_date),
     ).all()
     manual_rows = ManualDailyRecord.query.filter(
         ManualDailyRecord.user_id.in_(member_ids),
-        ManualDailyRecord.record_date >= month_start,
-        ManualDailyRecord.record_date <= month_end,
+        ManualDailyRecord.record_date >= from_date,
+        ManualDailyRecord.record_date <= to_date,
         ManualDailyRecord.status != "rejected",
     ).all() if member_ids else []
     manual_by_day = {(row.user_id, row.record_date): row for row in manual_rows}
@@ -132,10 +131,12 @@ def get_monthly_goal(user, month_value=None):
     eligible_days = 0
     leave_days_excluded = 0
     targets_by_user = {member.id: 0 for member in members}
+    eligible_by_user = {member.id: 0 for member in members}
+    leave_by_user = {member.id: 0 for member in members}
     adjusted_targets_by_user = {member.id: Decimal("0.00") for member in members}
     for member in members:
-        employment_end = min(month_end, member.last_working_day) if member.last_working_day else month_end
-        work_date = month_start
+        employment_end = min(to_date, member.last_working_day) if member.last_working_day else to_date
+        work_date = from_date
         while work_date <= employment_end:
             if work_date.weekday() < 5 and work_date not in holidays:
                 period = next(
@@ -159,8 +160,10 @@ def get_monthly_goal(user, month_value=None):
                 if rule is not None:
                     if (member.id, work_date) in full_leave_days:
                         leave_days_excluded += 1
+                        leave_by_user[member.id] += 1
                     else:
                         eligible_days += 1
+                        eligible_by_user[member.id] += 1
                         target_charts += rule.daily_target
                         targets_by_user[member.id] += rule.daily_target
                         adjusted_daily_target = Decimal(rule.daily_target)
@@ -175,11 +178,11 @@ def get_monthly_goal(user, month_value=None):
                         adjusted_targets_by_user[member.id] += adjusted_daily_target
             work_date += timedelta(days=1)
 
-    completed_through = min(month_end, date.today())
+    completed_through = min(to_date, date.today())
     completed_charts = 0
     completed_by_user = {}
     manual_by_user = {}
-    if member_ids and completed_through >= month_start:
+    if member_ids and completed_through >= from_date:
         completed_by_user = dict(
             db.session.query(KaironChartRecord.user_id, func.count(KaironChartRecord.id))
             .join(KaironUploadBatch, KaironChartRecord.batch_id == KaironUploadBatch.id)
@@ -189,7 +192,7 @@ def get_monthly_goal(user, month_value=None):
                 KaironChartRecord.status == "Completed",
                 unique_completed_production(),
                 KaironChartRecord.user_id.in_(member_ids),
-                KaironChartRecord.completed_date >= month_start,
+                KaironChartRecord.completed_date >= from_date,
                 KaironChartRecord.completed_date <= completed_through,
                 db.or_(
                     User.last_working_day.is_(None),
@@ -206,7 +209,7 @@ def get_monthly_goal(user, month_value=None):
             .filter(
                 ManualDailyRecord.user_id.in_(member_ids),
                 ManualDailyRecord.status != "rejected",
-                ManualDailyRecord.record_date >= month_start,
+                ManualDailyRecord.record_date >= from_date,
                 ManualDailyRecord.record_date <= completed_through,
                 db.or_(User.last_working_day.is_(None), ManualDailyRecord.record_date <= User.last_working_day),
             )
@@ -216,13 +219,15 @@ def get_monthly_goal(user, month_value=None):
 
     calendar_working_days = sum(
         1
-        for offset in range((month_end - month_start).days + 1)
-        if (month_start + timedelta(days=offset)).weekday() < 5
-        and (month_start + timedelta(days=offset)) not in holidays
+        for offset in range((to_date - from_date).days + 1)
+        if (from_date + timedelta(days=offset)).weekday() < 5
+        and (from_date + timedelta(days=offset)) not in holidays
     )
     return {
-        "month": month_start.strftime("%Y-%m"),
-        "scope": "team" if role_type == "lead" else "self",
+        "month": from_date.strftime("%Y-%m"),
+        "from_date": from_date,
+        "to_date": to_date,
+        "scope": scope,
         "user_count": len(members),
         "completed_charts": completed_charts,
         "manual_charts": sum(manual_by_user.values()),
@@ -236,6 +241,8 @@ def get_monthly_goal(user, month_value=None):
                 "manual_charts": manual_by_user.get(member.id, 0),
                 "completed_charts": completed_by_user.get(member.id, 0),
                 "target_charts": targets_by_user[member.id],
+                "eligible_days": eligible_by_user[member.id],
+                "leave_days_excluded": leave_by_user[member.id],
                 "adjusted_target_charts": adjusted_targets_by_user[member.id],
                 "adjusted_difference": adjusted_targets_by_user[member.id] - manual_by_user.get(member.id, 0),
                 "difference": targets_by_user[member.id] - completed_by_user.get(member.id, 0),

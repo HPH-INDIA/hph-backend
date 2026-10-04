@@ -32,13 +32,17 @@ from app.reports.schemas import (
     ManualTeamDayQuerySchema,
     ManualTeamRangeEnvelopeSchema,
     ManualTeamRangeQuerySchema,
+    LeadDashboardEnvelopeSchema,
+    LeadDashboardQuerySchema,
     MonthlyGoalEnvelopeSchema,
     MonthlyGoalQuerySchema,
     PaginationQuerySchema,
     SelfKaironChartQuerySchema,
     SelfManualRecordsQuerySchema,
 )
+from app.reports.lead_dashboard import get_lead_dashboard
 from app.reports.services import (
+    _month_window,
     bulk_approve_manual_records,
     bulk_reject_manual_records,
     get_efficiency,
@@ -452,3 +456,22 @@ class MonthlyGoalDashboard(MethodView):
     def get(self, args):
         result = get_monthly_goal(g.user, args.get("month"))
         return {"status": 200, "message": "Monthly chart goal retrieved successfully.", "data": result}
+
+
+@bp.route("/dashboards/lead")
+class LeadDashboard(MethodView):
+    @require_feature("dashboard")
+    @require_role_types("lead")
+    @bp.arguments(LeadDashboardQuerySchema, location="query")
+    @bp.response(200, LeadDashboardEnvelopeSchema)
+    def get(self, args):
+        from_date, to_date = resolve_dashboard_window(args)
+        if from_date > to_date:
+            abort(400, message="from must be on or before to.")
+        # Monthly goals stay full-month, just as in the coder dashboard.
+        # Other period modes use the exact selected reporting window.
+        goal_to_date = to_date
+        if not any(args.get(key) for key in ("from_date", "to_date", "date", "year")):
+            _, goal_to_date = _month_window(args.get("month"))
+        result = get_lead_dashboard(g.user, from_date, to_date, args.get("coder_id"), goal_to_date)
+        return {"status": 200, "message": "QA and coder performance retrieved successfully.", "data": result}

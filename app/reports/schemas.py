@@ -267,6 +267,10 @@ class EfficiencyQuerySchema(Schema):
     year = fields.Integer(required=False, load_default=None, validate=validate.Range(min=2000, max=2100))
 
 
+class LeadDashboardQuerySchema(EfficiencyQuerySchema):
+    coder_id = fields.Integer(required=False, load_default=None, data_key="coderId", validate=validate.Range(min=1))
+
+
 class MonthlyGoalQuerySchema(Schema):
     month = fields.String(required=False, load_default=None, validate=validate.Regexp(r"^\d{4}-\d{2}$"))
 
@@ -387,6 +391,36 @@ class CodingDashboardCardSchema(Schema):
     kairon = fields.Nested(CodingDashboardKaironSchema, dump_only=True)
     manual = fields.Nested(CodingDashboardManualSchema, dump_only=True)
     efficiency = fields.Nested(EfficiencySummarySchema, dump_only=True)
+
+
+class PeriodGoalSchema(MonthlyGoalSchema):
+    from_date = fields.Date(dump_only=True, data_key="from")
+    to_date = fields.Date(dump_only=True, data_key="to")
+
+
+class LeadPerformanceSectionSchema(Schema):
+    goal = fields.Nested(PeriodGoalSchema, dump_only=True)
+    efficiency = fields.Nested(EfficiencySummarySchema, dump_only=True)
+
+
+class LeadCoderOptionSchema(Schema):
+    user_id = fields.Integer(dump_only=True, data_key="userId")
+    name = fields.String(dump_only=True)
+    is_active = fields.Boolean(dump_only=True, data_key="isActive")
+
+
+class LeadDashboardSchema(Schema):
+    from_date = fields.Date(dump_only=True, data_key="from")
+    to_date = fields.Date(dump_only=True, data_key="to")
+    selected_coder_id = fields.Integer(dump_only=True, allow_none=True, data_key="selectedCoderId")
+    coder_options = fields.List(fields.Nested(LeadCoderOptionSchema), dump_only=True, data_key="coderOptions")
+    qa = fields.Nested(LeadPerformanceSectionSchema, dump_only=True)
+    coders = fields.Nested(LeadPerformanceSectionSchema, dump_only=True)
+
+
+LeadDashboardEnvelopeSchema = envelope_schema(
+    "LeadDashboardEnvelopeSchema", fields.Nested(LeadDashboardSchema)
+)
 
 
 BulkApproveResultEnvelopeSchema = envelope_schema(
