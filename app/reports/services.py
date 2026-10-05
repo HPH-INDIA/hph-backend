@@ -76,7 +76,7 @@ def get_monthly_goal(user, month_value=None):
     return get_period_goal(members, month_start, month_end, "team" if is_lead else "self")
 
 
-def get_period_goal(members, from_date, to_date, scope="team"):
+def get_period_goal(members, from_date, to_date, scope="team", program=None):
     """Batch calendar targets for explicitly scoped users and a reporting period.
 
     Exclude weekends, office holidays, and full leave; apply saved CPD
@@ -190,6 +190,7 @@ def get_period_goal(members, from_date, to_date, scope="team"):
             .filter(
                 KaironUploadBatch.superseded_at.is_(None),
                 KaironChartRecord.status == "Completed",
+                func.upper(KaironChartRecord.program) == program if program else True,
                 unique_completed_production(),
                 KaironChartRecord.user_id.in_(member_ids),
                 KaironChartRecord.completed_date >= from_date,
@@ -204,7 +205,8 @@ def get_period_goal(members, from_date, to_date, scope="team"):
         )
         completed_charts = sum(completed_by_user.values())
         manual_by_user = dict(
-            db.session.query(ManualDailyRecord.user_id, func.sum(ManualDailyRecord.production_count))
+            db.session.query(ManualDailyRecord.user_id, func.sum(ManualDailyRecord.pvp_count if program == "PVP" else
+                ManualDailyRecord.foundation_count if program == "FOUNDATION" else ManualDailyRecord.production_count))
             .join(User, ManualDailyRecord.user_id == User.id)
             .filter(
                 ManualDailyRecord.user_id.in_(member_ids),

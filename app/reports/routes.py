@@ -34,6 +34,8 @@ from app.reports.schemas import (
     ManualTeamRangeQuerySchema,
     LeadDashboardEnvelopeSchema,
     LeadDashboardQuerySchema,
+    ManagerDashboardQuerySchema,
+    ManagerDashboardEnvelopeSchema,
     MonthlyGoalEnvelopeSchema,
     MonthlyGoalQuerySchema,
     PaginationQuerySchema,
@@ -41,6 +43,7 @@ from app.reports.schemas import (
     SelfManualRecordsQuerySchema,
 )
 from app.reports.lead_dashboard import get_lead_dashboard
+from app.reports.manager_dashboard import get_manager_dashboard
 from app.reports.services import (
     _month_window,
     bulk_approve_manual_records,
@@ -475,3 +478,22 @@ class LeadDashboard(MethodView):
             _, goal_to_date = _month_window(args.get("month"))
         result = get_lead_dashboard(g.user, from_date, to_date, args.get("coder_id"), goal_to_date)
         return {"status": 200, "message": "QA and coder performance retrieved successfully.", "data": result}
+
+
+@bp.route("/dashboards/manager")
+class ManagerDashboard(MethodView):
+    @require_feature("dashboard")
+    @require_role_types("manager")
+    @bp.arguments(ManagerDashboardQuerySchema, location="query")
+    @bp.response(200, ManagerDashboardEnvelopeSchema)
+    def get(self, args):
+        from_date, to_date = resolve_dashboard_window(args)
+        if from_date > to_date:
+            abort(400, message="from must be on or before to.")
+        goal_to_date = to_date
+        if not any(args.get(key) for key in ("from_date", "to_date", "date", "year")):
+            _, goal_to_date = _month_window(args.get("month"))
+        result = get_manager_dashboard(g.user, from_date, to_date,
+            lead_id=args.get("lead_id"), coder_id=args.get("coder_id"),
+            cohort_id=args.get("cohort_id"), program=args.get("program"), goal_to_date=goal_to_date)
+        return {"status": 200, "message": "Manager performance retrieved successfully.", "data": result}

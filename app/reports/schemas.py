@@ -452,3 +452,49 @@ KaironCompletedUserPageEnvelopeSchema = envelope_schema(
     "KaironCompletedUserPageEnvelopeSchema",
     fields.Nested(KaironCompletedUserPageSchema),
 )
+
+
+class ManagerDashboardQuerySchema(LeadDashboardQuerySchema):
+    lead_id = fields.Integer(load_default=None, data_key="leadId", validate=validate.Range(min=1))
+    cohort_id = fields.Integer(load_default=None, data_key="cohortId", validate=validate.Range(min=1))
+    program = fields.String(load_default=None, validate=validate.OneOf(["PVP", "FOUNDATION"]))
+
+
+class ManagerCoderOptionSchema(LeadCoderOptionSchema):
+    lead_id = fields.Integer(dump_only=True, allow_none=True, data_key="leadId")
+    cohort_id = fields.Integer(dump_only=True, allow_none=True, data_key="cohortId")
+
+
+class ManagerCohortOptionSchema(Schema):
+    id = fields.Integer(dump_only=True)
+    label = fields.String(dump_only=True)
+
+
+class ManagerPerformanceMemberSchema(LeadCoderOptionSchema):
+    lead_id = fields.Integer(dump_only=True, allow_none=True, data_key="leadId")
+    emp_id = fields.String(dump_only=True, allow_none=True, data_key="empId")
+    role_type = fields.String(dump_only=True, data_key="roleType")
+    efficiency = fields.Nested(EfficiencySummarySchema(exclude=("daily",)), dump_only=True)
+
+
+class ManagerPerformanceTeamSchema(Schema):
+    key = fields.String(dump_only=True)
+    lead = fields.Nested(LeadCoderOptionSchema, dump_only=True, allow_none=True)
+    qa = fields.Nested(LeadPerformanceSectionSchema, dump_only=True)
+    coders = fields.Nested(LeadPerformanceSectionSchema, dump_only=True)
+
+
+class ManagerDashboardSchema(Schema):
+    from_date = fields.Date(dump_only=True, data_key="from")
+    to_date = fields.Date(dump_only=True, data_key="to")
+    lead_options = fields.List(fields.Nested(LeadCoderOptionSchema), dump_only=True, data_key="leadOptions")
+    coder_options = fields.List(fields.Nested(ManagerCoderOptionSchema), dump_only=True, data_key="coderOptions")
+    cohort_options = fields.List(fields.Nested(ManagerCohortOptionSchema), dump_only=True, data_key="cohortOptions")
+    overall = fields.Nested(EfficiencySummarySchema(exclude=("daily",)), dump_only=True)
+    qa = fields.Nested(LeadPerformanceSectionSchema, dump_only=True)
+    coders = fields.Nested(LeadPerformanceSectionSchema, dump_only=True)
+    teams = fields.List(fields.Nested(ManagerPerformanceTeamSchema), dump_only=True)
+    members = fields.List(fields.Nested(ManagerPerformanceMemberSchema), dump_only=True)
+
+
+ManagerDashboardEnvelopeSchema = envelope_schema("ManagerDashboardEnvelopeSchema", fields.Nested(ManagerDashboardSchema))
