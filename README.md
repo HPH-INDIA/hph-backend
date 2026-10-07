@@ -61,6 +61,39 @@ All blueprints are mounted under the `/api` prefix (see `app/__init__.py`).
    python run.py
    ```
 
+## Deploy a Docker test environment
+
+The test Docker setup keeps PostgreSQL and private import Storage on Supabase. For the full UI/API deployment, clone this repository beside `hph` and follow the [frontend deployment README](https://github.com/VinayVudatalaHPH/hph/blob/main/README.md).
+
+For the API alone, run these commands from `hph-backend` with Docker running and Compose 2.30 or newer:
+
+```sh
+cp .env.test.example .env.test
+chmod 600 .env.test
+```
+
+Fill `.env.test` with the chosen Supabase project's connection, Storage secret, and stable application keys before continuing. See [DOCKER_TEST.md](DOCKER_TEST.md) for key generation, new-project initialization, and connecting a local frontend. Preserve existing application keys when reusing a database; use a separate Supabase project for independent test records.
+
+```sh
+docker compose -f compose.test.yaml config --quiet
+docker compose -f compose.test.yaml build
+# For a new test project, explicitly initialize its schema and bucket:
+docker compose -f compose.test.yaml run --rm backend python -m flask --app run:app db upgrade
+docker compose -f compose.test.yaml run --rm backend python -m flask --app run:app setup-import-storage
+docker compose -f compose.test.yaml up -d --wait
+docker compose -f compose.test.yaml exec backend python scripts/check-test-environment.py
+docker compose -f compose.test.yaml ps
+```
+
+The API listens at `http://localhost:8083`. For an existing project, review pending migrations before applying them and skip bucket initialization if it is already configured. Start either this backend-only stack or the full frontend stack; they share the `hph-test` project.
+
+```sh
+# Follow logs; Ctrl+C exits the viewer.
+docker compose -f compose.test.yaml logs -f backend
+# Stop containers and remove their network; Supabase data is retained.
+docker compose -f compose.test.yaml down
+```
+
 ## Deploy to Render
 
 The repository includes a `render.yaml` Blueprint for a Docker-based web

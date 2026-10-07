@@ -41,3 +41,7 @@ docker compose --env-file .env.compose up -d backend
 ```
 
 For repeatable deployments, append `#<commit-sha>` or `#<tag>` to the build context URL.
+
+## Dedicated test environment
+
+Use `Dockerfile.test` and `compose.test.yaml` for the separate `hph-test` stack. See [DOCKER_TEST.md](DOCKER_TEST.md) for setup. The test API reads `.env.test` and keeps PostgreSQL and Storage on Supabase.

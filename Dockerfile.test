@@ -1,0 +1,26 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PORT=8080 \
+    CELERY_TASK_ALWAYS_EAGER=true \
+    CELERY_BROKER_URL=memory:// \
+    CELERY_RESULT_BACKEND=cache+memory:// \
+    IMPORT_EMBEDDED_PROCESSING=true \
+    EMAIL_SUPPRESS_SEND=true \
+    EMAIL_VALIDATE_CONFIG=false \
+    LOG_DECRYPTED_PAYLOADS=false
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+RUN useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5)" || exit 1
+# Schema migrations and bucket creation are explicit setup steps.
+CMD ["gunicorn", "--config", "gunicorn.conf.py", "run:app"]
