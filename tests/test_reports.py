@@ -1041,3 +1041,41 @@ def test_coding_dashboard_returns_expected_card_for_a_user(api_client, employee_
     assert card["kairon"] == {"active": 0, "onHold": 0, "completed": 1}
     assert card["manual"]["productionCount"] == 10
     assert {row["date"] for row in card["efficiency"]["daily"]} == {"2026-09-05", "2026-09-16"}
+
+
+@pytest.mark.parametrize("endpoint", ["manual", "kairon/completed-counts"])
+def test_reports_shared_date_range_filters_before_pagination(api_client, employee_user, manager_user, endpoint):
+    other = _get_or_create_user("reports-range-other@example.com", "Range", "Other", "TEST-RPT-RANGE")
+    dates = [dt.date(2026, 9, 9), dt.date(2026, 9, 10), dt.date(2026, 10, 5), dt.date(2026, 10, 6)]
+    if endpoint == "manual":
+        for user in (employee_user, other):
+            for date in dates:
+                upsert_own_record(user.id, _manual_entry(record_date=date))
+    else:
+        import_batch(dt.date(2026, 10, 7), [
+            _kairon_row(user, "Completed", completed_date=date)
+            for user in (employee_user, other) for date in dates
+        ], uploaded_by_id=manager_user.id)
+    api_client.login("test-employee@example.com", "test-password")
+    base = f"/api/reports/{endpoint}"
+    status, body = api_client.get(base + "?fromDate=2026-09-10&toDate=2026-10-05&pageSize=1&page=2")
+    assert status == 200, body
+    assert body["data"]["total"] == 2
+    assert body["data"]["totalPages"] == 2
+    assert [item["date"] for item in body["data"]["items"]] == ["2026-09-10"]
+    if endpoint == "manual":
+        assert body["data"]["items"][0]["userId"] == employee_user.id
+    else:
+        assert body["data"]["items"][0]["count"] == 1
+    for query, expected in [
+        ("fromDate=2026-10-05&toDate=2026-10-05", ["2026-10-05"]),
+        ("fromDate=2026-10-06", ["2026-10-06"]),
+        ("toDate=2026-09-09", ["2026-09-09"]),
+        ("fromDate=2026-11-01&toDate=2026-11-30", []),
+    ]:
+        status, body = api_client.get(base + "?" + query)
+        assert status == 200, body
+        assert [item["date"] for item in body["data"]["items"]] == expected
+    for query in ["fromDate=2026-10-05&toDate=2026-09-10", "fromDate=invalid", "toDate=2026-02-30"]:
+        status, _ = api_client.get(base + "?" + query)
+        assert status in (400, 422)

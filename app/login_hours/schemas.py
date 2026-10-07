@@ -8,6 +8,16 @@ class LoginHoursUploadRequestSchema(Schema):
     file_base64 = fields.String(required=True, validate=validate.Length(min=1, max=15_000_000), data_key="fileBase64")
 
 
+class LoginHoursRecordChunkSchema(Schema):
+    source_filename = fields.String(required=True, validate=validate.Length(min=1, max=255), data_key="sourceFilename")
+    source_format = fields.String(required=True, validate=validate.Length(min=1, max=64), data_key="sourceFormat")
+    upload_id = fields.UUID(required=True, data_key="uploadId")
+    batch_id = fields.Integer(load_default=None, allow_none=True, validate=validate.Range(min=1), data_key="batchId")
+    chunk_index = fields.Integer(required=True, validate=validate.Range(min=0), data_key="chunkIndex")
+    headers = fields.List(fields.String(allow_none=True), required=True, validate=validate.Length(min=1, max=100))
+    rows = fields.List(fields.List(fields.Raw(allow_none=True), validate=validate.Length(max=100)), required=True, validate=validate.Length(min=1, max=200))
+
+
 class LoginHoursUploadBatchSchema(Schema):
     id = fields.Integer(dump_only=True)
     source_filename = fields.String(dump_only=True, data_key="sourceFilename")

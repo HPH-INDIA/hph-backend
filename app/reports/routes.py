@@ -39,6 +39,7 @@ from app.reports.schemas import (
     MonthlyGoalEnvelopeSchema,
     MonthlyGoalQuerySchema,
     PaginationQuerySchema,
+    ReportPeriodQuerySchema,
     SelfKaironChartQuerySchema,
     SelfManualRecordsQuerySchema,
 )
@@ -82,7 +83,7 @@ def _page(query, args):
 @bp.route("/reports/kairon/completed-counts")
 class ReportsKaironCompletedCounts(MethodView):
     @require_feature(REPORTS_FEATURE)
-    @bp.arguments(PaginationQuerySchema, location="query")
+    @bp.arguments(ReportPeriodQuerySchema, location="query")
     @bp.response(200, KaironCompletedDailyCountPageEnvelopeSchema)
     def get(self, args):
         query = (
@@ -103,6 +104,10 @@ class ReportsKaironCompletedCounts(MethodView):
             query = query.filter(KaironChartRecord.user_id == g.user.id)
         elif role_type_code == "manager":
             query = query.filter(KaironChartRecord.user_id.in_(manager_team_user_ids(g.user.id)))
+        if args.get("from_date"):
+            query = query.filter(KaironChartRecord.completed_date >= args["from_date"])
+        if args.get("to_date"):
+            query = query.filter(KaironChartRecord.completed_date <= args["to_date"])
         query = query.group_by(KaironChartRecord.completed_date).order_by(KaironChartRecord.completed_date.desc())
         return {
             "status": 200,
@@ -324,6 +329,10 @@ class ReportsManual(MethodView):
             ManualDailyRecord.query.filter_by(user_id=g.user.id)
             .order_by(ManualDailyRecord.record_date.desc(), ManualDailyRecord.id.desc())
         )
+        if args.get("from_date"):
+            query = query.filter(ManualDailyRecord.record_date >= args["from_date"])
+        if args.get("to_date"):
+            query = query.filter(ManualDailyRecord.record_date <= args["to_date"])
         return {"status": 200, "message": "Your manual daily records retrieved successfully.", "data": _page(query, args)}
 
 

@@ -76,6 +76,8 @@ def create_app():
     from app.login_hours import bp as login_hours_bp
     api.register_blueprint(roles_bp)
     api.register_blueprint(features_bp)
+    from app.projects import bp as projects_bp
+    api.register_blueprint(projects_bp)
     api.register_blueprint(users_bp)
     api.register_blueprint(sessions_bp)
     api.register_blueprint(encryption_bp)

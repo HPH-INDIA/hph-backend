@@ -13,6 +13,10 @@ class LoginHoursUploadBatch(db.Model):
     matched_count = db.Column(db.Integer, nullable=False, default=0)
     unmatched_count = db.Column(db.Integer, nullable=False, default=0)
 
+    upload_token = db.Column(db.String(36), nullable=True)
+    chunk_hashes = db.Column(db.JSON, nullable=True)
+    unmatched_names = db.Column(db.JSON, nullable=True)
+
     uploaded_by = db.relationship("User")
 
 

@@ -10,8 +10,9 @@ from app.login_hours.schemas import (
     LoginHoursUploadBatchEnvelopeSchema,
     LoginHoursUploadBatchListEnvelopeSchema,
     LoginHoursUploadRequestSchema,
+    LoginHoursRecordChunkSchema,
 )
-from app.login_hours.services import import_login_hours, list_login_hour_records
+from app.login_hours.services import import_login_hours, import_login_hour_chunk, list_login_hour_records
 
 
 @bp.route("/login-hours/uploads")
@@ -52,3 +53,13 @@ class LoginHoursRecords(MethodView):
             project_id=args.get("project_id"),
         )
         return {"status": 200, "message": "Login-hour records retrieved successfully.", "data": page}
+
+
+@bp.route("/login-hours/uploads/records")
+class LoginHoursRecordChunks(MethodView):
+    @require_feature("login_hours", access="write")
+    @bp.arguments(LoginHoursRecordChunkSchema)
+    @bp.response(201, LoginHoursUploadBatchEnvelopeSchema)
+    def post(self, data):
+        batch = import_login_hour_chunk(data, g.user.id)
+        return {"status": 201, "message": "Attendance records saved successfully.", "data": batch}

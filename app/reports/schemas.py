@@ -38,7 +38,17 @@ class KaironCompletedRecordQuerySchema(PaginationQuerySchema):
     user_id = fields.Integer(required=True, data_key="userId")
 
 
-class SelfManualRecordsQuerySchema(PaginationQuerySchema):
+class ReportPeriodQuerySchema(PaginationQuerySchema):
+    from_date = fields.Date(required=False, load_default=None, data_key="fromDate")
+    to_date = fields.Date(required=False, load_default=None, data_key="toDate")
+
+    @validates_schema
+    def validate_window(self, data, **kwargs):
+        if data.get("from_date") and data.get("to_date") and data["from_date"] > data["to_date"]:
+            raise ValidationError("End date must be on or after start date.", field_name="toDate")
+
+
+class SelfManualRecordsQuerySchema(ReportPeriodQuerySchema):
     pass
 
 

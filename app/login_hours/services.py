@@ -6,6 +6,10 @@ from io import BytesIO
 
 from flask_smorest import abort
 from openpyxl import load_workbook
+from openpyxl.utils.datetime import from_excel
+from sqlalchemy.dialects.postgresql import insert
+import hashlib
+import json
 
 from app.extensions import db
 from app.cohorts.models import Cohort, CohortMembership
@@ -63,6 +67,11 @@ def _find_table(workbook):
 
 
 def _parse_date(value):
+    if isinstance(value, (int, float)):
+        try:
+            value = from_excel(value)
+        except (ValueError, OverflowError):
+            return None
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
@@ -77,6 +86,11 @@ def _parse_date(value):
 
 
 def _parse_time(value):
+    if isinstance(value, (int, float)):
+        try:
+            value = from_excel(value)
+        except (ValueError, OverflowError):
+            return None
     if isinstance(value, datetime):
         return value.time().replace(microsecond=0)
     if isinstance(value, time):
@@ -145,6 +159,22 @@ def import_login_hours(file_base64, source_filename, uploaded_by_id):
         abort(400, message="The uploaded file is not a readable .xlsx workbook.")
 
     sheet, header_row, headers, source_format = _find_table(workbook)
+    try:
+        parsed_rows, unmatched_row_count, unmatched_names = _parse_rows(sheet.iter_rows(min_row=header_row + 1, values_only=True), headers)
+    finally:
+        workbook.close()
+    batch = LoginHoursUploadBatch(source_filename=source_filename, source_format=source_format,
+        uploaded_by_id=uploaded_by_id, row_count=len(parsed_rows) + unmatched_row_count,
+        matched_count=len(parsed_rows), unmatched_count=unmatched_row_count)
+    db.session.add(batch)
+    db.session.flush()
+    _upsert_rows(parsed_rows, batch.id)
+    batch.unmatched_names = unmatched_names
+    db.session.commit()
+    return batch
+
+
+def _parse_rows(rows, headers):
     users_by_name = _coding_users_by_name()
     parsed_by_key = {}
     unmatched_names = set()
@@ -154,7 +184,7 @@ def import_login_hours(file_base64, source_filename, uploaded_by_id):
         index = headers.get(header)
         return row[index] if index is not None and index < len(row) else None
 
-    for row in sheet.iter_rows(min_row=header_row + 1, values_only=True):
+    for row in rows:
         employee_name = str(value(row, "employee") or "").strip()
         attendance_date = _parse_date(value(row, "date"))
         if not employee_name or attendance_date is None:
@@ -188,35 +218,61 @@ def import_login_hours(file_base64, source_filename, uploaded_by_id):
                 "anomalies": _integer(value(row, "anomalies")),
             }
 
-    parsed_rows = list(parsed_by_key.values())
+    return list(parsed_by_key.values()), unmatched_row_count, sorted(unmatched_names)
 
-    batch = LoginHoursUploadBatch(
-        source_filename=source_filename,
-        source_format=source_format,
-        uploaded_by_id=uploaded_by_id,
-        row_count=len(parsed_rows) + unmatched_row_count,
-        matched_count=len(parsed_rows),
-        unmatched_count=unmatched_row_count,
-    )
-    db.session.add(batch)
-    db.session.flush()
 
-    # The newest upload wins for a user/date while the batch table retains
-    # who uploaded each source and its match/drop counts.
-    for data in parsed_rows:
+def _upsert_rows(rows, batch_id):
+    values = []
+    for data in rows:
         user = data.pop("user")
-        record = LoginHourRecord.query.filter_by(
-            user_id=user.id, attendance_date=data["attendance_date"]
-        ).first()
-        if record is None:
-            record = LoginHourRecord(user_id=user.id, attendance_date=data["attendance_date"])
-            db.session.add(record)
-        record.batch_id = batch.id
-        for key, value_to_set in data.items():
-            setattr(record, key, value_to_set)
+        values.append({**data, "user_id": user.id, "batch_id": batch_id})
+    # Bound SQL parameters even for the legacy whole-workbook endpoint.
+    for offset in range(0, len(values), 200):
+        statement = insert(LoginHourRecord).values(values[offset:offset + 200])
+        fields = {key: getattr(statement.excluded, key) for key in values[offset] if key not in {"user_id", "attendance_date"}}
+        fields["updated_at"] = db.func.now()
+        db.session.execute(statement.on_conflict_do_update(constraint="uq_login_hour_records_user_date", set_=fields))
 
+
+def import_login_hour_chunk(data, uploaded_by_id):
+    data = {**data, "upload_id": str(data["upload_id"])}
+    headers = {_normalize(value): index for index, value in enumerate(data["headers"])}
+    if not REQUIRED_HEADERS.issubset(headers):
+        abort(400, message="The workbook does not contain a supported attendance table.")
+    digest = hashlib.sha256(json.dumps({key: data[key] for key in ("rows", "headers", "source_filename", "source_format")}, sort_keys=True).encode()).hexdigest()
+    batch_id = data.get("batch_id")
+    if batch_id is None:
+        if data["chunk_index"] != 0:
+            abort(409, message="Start with the first chunk.")
+        # Client upload UUID also makes the first request retry-safe.
+        db.session.execute(db.text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": str(uploaded_by_id) + data["upload_id"]})
+        batch = LoginHoursUploadBatch.query.filter_by(upload_token=data["upload_id"], uploaded_by_id=uploaded_by_id).with_for_update().first()
+        if batch is None:
+            batch = LoginHoursUploadBatch(source_filename=data["source_filename"], source_format=data["source_format"], uploaded_by_id=uploaded_by_id,
+                row_count=0, matched_count=0, unmatched_count=0, upload_token=data["upload_id"], chunk_hashes=[], unmatched_names=[])
+            db.session.add(batch)
+            db.session.flush()
+    else:
+        batch = LoginHoursUploadBatch.query.filter_by(id=batch_id, uploaded_by_id=uploaded_by_id, upload_token=data["upload_id"]).with_for_update().first()
+        if batch is None:
+            abort(404, message="Upload batch not found.")
+    hashes = batch.chunk_hashes or []
+    index = data["chunk_index"]
+    if index < len(hashes):
+        if hashes[index] != digest:
+            abort(409, message="This chunk was already saved with different records.")
+        db.session.commit()
+        return batch
+    if index != len(hashes):
+        abort(409, message="Upload chunks in order.")
+    rows, unmatched_count, names = _parse_rows(data["rows"], headers)
+    _upsert_rows(rows, batch.id)
+    batch.row_count += len(rows) + unmatched_count
+    batch.matched_count += len(rows)
+    batch.unmatched_count += unmatched_count
+    batch.unmatched_names = sorted(set(batch.unmatched_names or []) | set(names))
+    batch.chunk_hashes = [*hashes, digest]
     db.session.commit()
-    batch.unmatched_names = sorted(unmatched_names)
     return batch
 
 

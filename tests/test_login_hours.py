@@ -274,3 +274,38 @@ def test_lead_and_employee_record_access_is_limited_to_their_reporting_scope(api
         {"sourceFilename": "forbidden.xlsx", "fileBase64": payload},
     )
     assert status == 403, body
+
+
+def test_chunked_attendance_retry_order_and_ownership(api_client, manager_user, employee_user):
+    import uuid
+    from openpyxl.utils.datetime import to_excel
+    api_client.login(manager_user.email, "test-password")
+    request = {"sourceFilename": "chunks.xlsx", "sourceFormat": "Employee-wise attendance", "uploadId": str(uuid.uuid4()),
+        "chunkIndex": 0, "headers": HEADERS, "rows": [
+        [to_excel(date(2026, 10, 1)), "P1", f"{employee_user.first_name} {employee_user.last_name}", "Coding", 9 / 24, 17 / 24, 8 / 24, 0, 8 / 24, 1, 1, "Complete", 0],
+        ["2026-10-01", "P2", "Unknown Person", "Coding", "09:00", "17:00", "8h", "0h", "8h", 1, 1, "Complete", 0]]}
+    status, body = api_client.post("/api/login-hours/uploads/records", request)
+    assert status == 201, body
+    batch_id = body["data"]["id"]
+    assert body["data"]["matchedCount"] == 1
+    assert body["data"]["unmatchedCount"] == 1
+    record = LoginHourRecord.query.filter_by(user_id=employee_user.id, attendance_date=date(2026, 10, 1)).one()
+    assert record.total_inside_minutes == 480
+    assert record.first_in.hour == 9
+    # Losing the first response is safe: the UUID retrieves the same batch.
+    status, retry = api_client.post("/api/login-hours/uploads/records", request)
+    assert status == 201, retry
+    assert retry["data"]["id"] == batch_id
+    assert retry["data"]["rowCount"] == 2
+    changed = {**request, "rows": request["rows"][:1]}
+    assert api_client.post("/api/login-hours/uploads/records", changed)[0] == 409
+    assert api_client.post("/api/login-hours/uploads/records", {**request, "batchId": batch_id, "chunkIndex": 2})[0] == 409
+    second = {**request, "batchId": batch_id, "chunkIndex": 1, "rows": [["2026-10-02", "P1", f"{employee_user.first_name} {employee_user.last_name}", "Coding", "09:00", "17:00", "7h", "0h", "8h", 1, 1, "Complete", 0]]}
+    status, body = api_client.post("/api/login-hours/uploads/records", second)
+    assert status == 201, body
+    assert body["data"]["matchedCount"] == 2
+    assert body["data"]["unmatchedNames"] == ["Unknown Person"]
+    assert api_client.post("/api/login-hours/uploads/records", {**request, "rows": request["rows"] * 101})[0] == 422
+    # Unmatched-only chunks are valid, and reads cannot grant upload access.
+    api_client.login(employee_user.email, "test-password")
+    assert api_client.post("/api/login-hours/uploads/records", second)[0] == 403

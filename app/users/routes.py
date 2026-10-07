@@ -34,6 +34,11 @@ from app.users.schemas import (
 )
 
 
+def _visible_users():
+    """Super Admin accounts never appear in user lists or selection options."""
+    return User.query.join(Role).join(RoleType).filter(RoleType.code != "super_admin")
+
+
 def _page(query, page, page_size):
     total = query.order_by(None).count()
     return {
@@ -102,12 +107,12 @@ def _issue_temp_password(user, is_resend=False):
 class Users(MethodView):
     @bp.response(200, UserListEnvelopeSchema)
     def get(self):
-        # §2: a user_management-holding Role sees everyone; anyone else sees
-        # only their own profile — not a hard 403, a narrower result set.
+        # User management lists exclude Super Admin, including the caller.
+        # Other roles see only their own non-Super-Admin profile.
         if has_feature(g.user, "user_management"):
-            users = User.query.all()
+            users = _visible_users().all()
         else:
-            users = [g.user]
+            users = [] if g.user.role.role_type.code == "super_admin" else [g.user]
         return {"status": 200, "message": "Users retrieved successfully.", "data": users}
 
     @require_feature("user_management")
@@ -147,7 +152,7 @@ class ActiveUsers(MethodView):
     @require_feature("user_management")
     @bp.response(200, UserListEnvelopeSchema)
     def get(self):
-        users = User.query.filter_by(is_active=True).all()
+        users = _visible_users().filter(User.is_active.is_(True)).all()
         return {"status": 200, "message": "Active users retrieved successfully.", "data": users}
 
 
@@ -156,7 +161,7 @@ class InactiveUsers(MethodView):
     @require_feature("user_management")
     @bp.response(200, UserListEnvelopeSchema)
     def get(self):
-        users = User.query.filter_by(is_active=False).all()
+        users = _visible_users().filter(User.is_active.is_(False)).all()
         return {"status": 200, "message": "Inactive users retrieved successfully.", "data": users}
 
 
@@ -169,7 +174,7 @@ class FilteredUsers(MethodView):
     @bp.arguments(UserFilterQuerySchema, location="query")
     @bp.response(200, UserListEnvelopeSchema)
     def get(self, args):
-        query = User.query
+        query = _visible_users()
         if args.get("project_ids"):
             query = query.filter(User.project_id.in_(args["project_ids"]))
         if args.get("role_ids"):

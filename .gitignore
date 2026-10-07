@@ -236,3 +236,7 @@ cloud-sql-proxy
 # Local runtime output
 logs/
 *.log
+
+# Docker Compose environment overrides
+.env.compose
+!.env.compose.example
