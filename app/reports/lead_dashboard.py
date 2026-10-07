@@ -46,6 +46,7 @@ def rollup_efficiency(summaries, from_date, to_date):
         from_date=from_date,
         to_date=to_date,
         adjusted_target=sum((summary["adjusted_target"] for summary in summaries), Decimal("0.00")),
+        adjusted_cpd=_sum_known(summaries, "adjusted_cpd"),
     )
     by_day = defaultdict(list)
     for summary in summaries:

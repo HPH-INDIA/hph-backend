@@ -352,6 +352,7 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
         total_manual_charts = 0
         total_kairon_charts = 0
         total_adjusted_target = Decimal("0")
+        total_adjusted_cpd = None
         total_target_minutes = 0
         total_inside_minutes = 0
         login_days = 0
@@ -428,6 +429,8 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
                 calculated_days += 1
             if adjusted_target is not None:
                 total_adjusted_target += adjusted_target
+            if manual is not None and manual.adjusted_cpd is not None:
+                total_adjusted_cpd = (total_adjusted_cpd or Decimal("0")) + manual.adjusted_cpd
             if inside_minutes is not None:
                 total_inside_minutes += inside_minutes
                 login_days += 1
@@ -467,6 +470,7 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
             "manual_charts": total_manual_charts,
             "kairon_charts": total_kairon_charts,
             "adjusted_target": total_adjusted_target.quantize(Decimal("0.01")),
+            "adjusted_cpd": total_adjusted_cpd,
             "inside_minutes": total_inside_minutes,
             "login_days": login_days,
             "productive_minutes": total_productive_minutes,

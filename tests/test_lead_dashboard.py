@@ -63,12 +63,14 @@ def test_all_coders_are_separate_from_qa_and_weighted_from_raw_totals(team, api_
     assert data["qa"]["goal"]["userCount"] == 1
     assert data["qa"]["efficiency"]["manualCharts"] == 100
     assert data["qa"]["efficiency"]["kaironCharts"] == 1
+    assert data["qa"]["efficiency"]["adjustedCpd"] == "30.00"
     coders = data["coders"]
     assert coders["goal"]["userCount"] == 2
     assert coders["goal"]["targetCharts"] == 37
     assert coders["goal"]["adjustedTargetCharts"] == "33.50"
     assert coders["efficiency"]["manualCharts"] == 37
     assert coders["efficiency"]["kaironCharts"] == 5
+    assert coders["efficiency"]["adjustedCpd"] == "33.50"
     assert coders["efficiency"]["manualCpd"] == "24.7"
     assert coders["efficiency"]["manualEfficiencyPercent"] == "110.4"
     day = coders["efficiency"]["daily"][0]
@@ -88,6 +90,7 @@ def test_coder_selection_changes_only_coders_and_keeps_all_options(team, api_cli
     assert len(data["coderOptions"]) == 2
     assert data["coders"]["goal"]["userCount"] == 1
     assert data["coders"]["efficiency"]["manualCharts"] == 7
+    assert data["coders"]["efficiency"]["adjustedCpd"] == "3.50"
     assert data["coders"]["efficiency"]["manualCpd"] == "14.0"
     assert data["coders"]["efficiency"]["manualEfficiencyPercent"] == "120.0"
 
