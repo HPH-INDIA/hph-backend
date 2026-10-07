@@ -80,6 +80,8 @@ def test_separate_scoped_totals_and_weighted_team_rollups(manager_team, api_clie
     assert data["qa"]["efficiency"]["kaironCharts"] == 4
     assert data["coders"]["efficiency"]["manualCharts"] == 52
     assert data["coders"]["efficiency"]["kaironCharts"] == 6
+    assert data["qa"]["efficiency"]["adjustedCpd"] == "60.00"
+    assert data["coders"]["efficiency"]["adjustedCpd"] == "63.50"
     assert data["qa"]["goal"]["targetCharts"] == 60
     assert data["coders"]["goal"]["adjustedTargetCharts"] == "63.50"
     first = next(team for team in data["teams"] if team["lead"]["userId"] == members[1].id)
@@ -89,6 +91,8 @@ def test_separate_scoped_totals_and_weighted_team_rollups(manager_team, api_clie
     assert first["coders"]["efficiency"]["manualEfficiencyPercent"] == "110.4"
     assert first["coders"]["efficiency"]["daily"][0]["adjustedCpd"] == "33.50"
     assert all("daily" not in member["efficiency"] for member in data["members"])
+    saved_targets = {member["userId"]: member["efficiency"]["adjustedCpd"] for member in data["members"]}
+    assert saved_targets == {member.id: "3.50" if member.id == members[4].id else "30.00" for member in members[1:6]}
     assert len(data["members"]) == 5
     assert data["overall"]["manualCharts"] == 172
     assert data["overall"]["kaironCharts"] == 10

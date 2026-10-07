@@ -373,6 +373,7 @@ class EfficiencySummarySchema(Schema):
     manual_charts = fields.Integer(dump_only=True, data_key="manualCharts")
     kairon_charts = fields.Integer(dump_only=True, data_key="kaironCharts")
     adjusted_target = fields.Decimal(dump_only=True, as_string=True, data_key="adjustedTarget")
+    adjusted_cpd = fields.Decimal(dump_only=True, allow_none=True, as_string=True, places=2, data_key="adjustedCpd")
     inside_minutes = fields.Integer(dump_only=True, data_key="insideMinutes")
     login_days = fields.Integer(dump_only=True, data_key="loginDays")
     productive_minutes = fields.Integer(dump_only=True, data_key="productiveMinutes")

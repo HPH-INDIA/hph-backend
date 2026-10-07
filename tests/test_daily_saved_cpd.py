@@ -9,6 +9,7 @@ from app.extensions import db
 from app.manual_daily_records import productivity
 from app.manual_daily_records.models import ManualDailyRecord
 from app.manual_daily_records.services import upsert_own_record
+from app.reports.lead_dashboard import rollup_efficiency
 from app.reports.services import get_efficiency
 
 
@@ -49,6 +50,7 @@ def test_daily_api_returns_saved_cpd_after_target_changes(
     status, response = api_client.get("/api/dashboards/my-efficiency?month=2026-09")
     assert status == 200, response
     rows = {row["date"]: row for row in response["data"]["daily"]}
+    assert response["data"]["adjustedCpd"] == expected
     assert rows[day.isoformat()]["adjustedCpd"] == expected
     assert rows["2026-09-11"]["adjustedCpd"] is None
     assert rows[day.isoformat()]["manualCharts"] == 20
@@ -64,3 +66,32 @@ def test_daily_saved_cpd_is_unavailable_without_configured_target(employee_user)
     ))
     result = get_efficiency([employee_user.id], day, day, include_daily=True)
     assert result[employee_user.id]["daily"][0]["adjusted_cpd"] is None
+    assert result[employee_user.id]["adjusted_cpd"] is None
+
+
+def test_period_summary_sums_saved_targets_and_keeps_zero_distinct_from_missing(employee_user):
+    start = dt.date(2026, 9, 10)
+    for offset, saved_target in enumerate((Decimal("0.00"), None, Decimal("28.13"), Decimal("26.25"))):
+        db.session.add(ManualDailyRecord(user_id=employee_user.id,
+            record_date=start + dt.timedelta(days=offset), production_count=20,
+            tech_issues_downtime_hours=0, no_inventory_idle_time_hours=0,
+            leave_hours=0, meeting_engagement_hours=0, status="pending", adjusted_cpd=saved_target))
+    db.session.commit()
+
+    def summary(first, last):
+        return get_efficiency([employee_user.id], start + dt.timedelta(days=first),
+                              start + dt.timedelta(days=last), include_daily=False)[employee_user.id]
+
+    assert summary(0, 0)["adjusted_cpd"] == Decimal("0.00")
+    assert summary(1, 1)["adjusted_cpd"] is None
+    assert summary(0, 1)["adjusted_cpd"] == Decimal("0.00")
+    period = summary(0, 3)
+    assert period["adjusted_cpd"] == Decimal("54.38")
+    assert period["adjusted_target"] == Decimal("0.00")
+    assert period["daily"] == []
+    assert summary(4, 4)["adjusted_cpd"] is None
+    # Summary totals remain available without per-day details, including in manager members.
+    for summaries, expected in (([summary(0, 0), summary(1, 1)], Decimal("0.00")),
+                                ([summary(1, 1)], None), ([], None),
+                                ([summary(2, 2), summary(3, 3)], Decimal("54.38"))):
+        assert rollup_efficiency(summaries, start, start)["adjusted_cpd"] == expected
