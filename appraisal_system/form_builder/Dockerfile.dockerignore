@@ -1,0 +1,13 @@
+# Used instead of the repository's .dockerignore when building with -f appraisal_system/form_builder/Dockerfile.
+*
+!appraisal_system/common/
+!appraisal_system/form_builder/
+# The in-repo symlink to common/ (the real directory is copied instead) and the tests.
+appraisal_system/form_builder/common
+appraisal_system/form_builder/tests
+appraisal_system/common/tests
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.coverage
