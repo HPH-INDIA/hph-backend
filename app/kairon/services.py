@@ -143,7 +143,6 @@ def import_batch(as_of_date, rows, uploaded_by_id, source_filename=None):
 
     matched_count = 0
     unmatched_names = []
-    completed_user_ids = set()
     for row in rows:
         user = resolve_user(row["coding_analyst"])
         if user is None:
@@ -167,8 +166,6 @@ def import_batch(as_of_date, rows, uploaded_by_id, source_filename=None):
         )
         db.session.add(record)
         db.session.flush()  # assigns record.id, needed below
-        if row["status"] == "Completed" and row.get("completed_date") is not None:
-            completed_user_ids.add(user.id)
 
         # Today's export gives one action per row; recorded as sequence 1
         # of what can later become a full multi-analyst chain (see
@@ -192,17 +189,11 @@ def import_batch(as_of_date, rows, uploaded_by_id, source_filename=None):
     # the skipped rows themselves are never persisted.
     batch.unmatched_names = unmatched_names
     _supersede_existing_batches(as_of_date, batch.id)
+    batch.status = "completed"
+    batch.completed_at = datetime.now(timezone.utc)
+    from app.cohorts.stage_refresh import refresh_all_user_stages
+    refresh_all_user_stages()
     db.session.commit()
-
-    if completed_user_ids:
-        from app.cohorts.models import CohortMembership
-        from app.cohorts.services import compute_user_stage_periods
-
-        memberships = CohortMembership.query.filter(CohortMembership.user_id.in_(completed_user_ids)).all()
-        for membership in memberships:
-            compute_user_stage_periods(membership)
-        if memberships:
-            db.session.commit()
     return batch
 
 
@@ -424,26 +415,7 @@ def complete_cumulative_import(batch_id):
         )
     batch.status = "completed"
     batch.completed_at = datetime.now(timezone.utc)
+    from app.cohorts.stage_refresh import refresh_all_user_stages
+    refresh_all_user_stages()
     db.session.commit()
-
-    completed_user_ids = {
-        user_id
-        for (user_id,) in db.session.query(KaironChartRecord.user_id)
-        .filter(
-            KaironChartRecord.batch_id == batch.id,
-            KaironChartRecord.status == "Completed",
-            KaironChartRecord.completed_date.isnot(None),
-        )
-        .distinct()
-        .all()
-    }
-    if completed_user_ids:
-        from app.cohorts.models import CohortMembership
-        from app.cohorts.services import compute_user_stage_periods
-
-        memberships = CohortMembership.query.filter(CohortMembership.user_id.in_(completed_user_ids)).all()
-        for membership in memberships:
-            compute_user_stage_periods(membership)
-        if memberships:
-            db.session.commit()
     return batch

@@ -3,6 +3,7 @@ project dashboard - no new source-of-truth tables, everything here reads
 or updates rows already owned by app.kairon and app.manual_daily_records.
 """
 import calendar
+from types import SimpleNamespace
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -15,6 +16,7 @@ from app.kairon.models import KaironChartRecord, KaironUploadBatch
 from app.kairon.production import unique_completed_production
 from app.login_hours.models import LoginHourRecord
 from app.manual_daily_records.models import ManualDailyRecord
+from app.manual_daily_records.productivity import combined_daily_target, foundation_targets_for
 from app.manual_daily_records.services import approve_record, manual_review_user_ids, reject_record
 from app.reports.models import OfficeHoliday
 from app.roles.models import Role, RoleType
@@ -174,7 +176,8 @@ def get_period_goal(members, from_date, to_date, scope="team", program=None):
                             # reduction. Clamp to zero if a later rule edit has
                             # lowered the calendar-day target below that reduction.
                             reduction = max(Decimal("0"), record.daily_target - record.adjusted_cpd)
-                            adjusted_daily_target = max(Decimal("0"), adjusted_daily_target - reduction)
+                            adjusted_daily_target = (record.adjusted_cpd if record.foundation_daily_target is not None
+                                                     else max(Decimal("0"), adjusted_daily_target - reduction))
                         adjusted_targets_by_user[member.id] += adjusted_daily_target
             work_date += timedelta(days=1)
 
@@ -303,6 +306,7 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
             KaironChartRecord.user_id,
             KaironChartRecord.completed_date,
             func.count(KaironChartRecord.id),
+            func.sum(case((func.upper(KaironChartRecord.program) == "FOUNDATION", 1), else_=0)),
         )
         .join(KaironUploadBatch, KaironChartRecord.batch_id == KaironUploadBatch.id)
         .join(User, KaironChartRecord.user_id == User.id)
@@ -336,7 +340,8 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
 
     login_by_key = {(row.user_id, row.attendance_date): row for row in login_rows}
     manual_by_key = {(row.user_id, row.record_date): row for row in manual_rows}
-    kairon_by_key = {(user_id, completed_date): count for user_id, completed_date, count in kairon_rows}
+    kairon_by_key = {(uid, day): count for uid, day, count, foundation_count in kairon_rows}
+    kairon_foundation_by_key = {(uid, day): foundation_count for uid, day, count, foundation_count in kairon_rows}
     periods_by_user = {}
     for period in periods:
         periods_by_user.setdefault(period.user_id, []).append(period)
@@ -346,12 +351,16 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
 
     results = {}
     all_keys = set(login_by_key) | set(manual_by_key) | set(kairon_by_key)
+    foundation_rates = foundation_targets_for([
+        SimpleNamespace(id=key, user_id=key[0], record_date=key[1]) for key in all_keys
+    ])
     for user_id in user_ids:
         dates = sorted((day for uid, day in all_keys if uid == user_id), reverse=True)
         daily = []
         total_manual_charts = 0
         total_kairon_charts = 0
         total_adjusted_target = Decimal("0")
+        total_kairon_target = Decimal("0")
         total_adjusted_cpd = None
         total_target_minutes = 0
         total_inside_minutes = 0
@@ -402,21 +411,36 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
                 if has_source_row
                 else None
             )
-            daily_target = rule.daily_target if rule else None
-            adjusted_target = (
-                (Decimal(daily_target) * target_minutes / FULL_WORKDAY_MINUTES).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
-                if daily_target is not None and target_minutes is not None
-                else None
-            )
+            main_rate = rule.daily_target if rule else None
+            # Explicit snapshots preserve the historical choice made by the
+            # target editor. Kairon-only rows use the effective dated rules.
+            foundation_rate = (manual.foundation_daily_target if manual is not None
+                               else foundation_rates.get((user_id, work_date)))
+            if manual is not None and manual.pvp_daily_target is not None:
+                main_rate = manual.pvp_daily_target
             manual_charts = _manual_count(manual, program)
             kairon_charts = kairon_by_key.get((user_id, work_date), 0)
+            kairon_foundation = kairon_foundation_by_key.get((user_id, work_date), 0)
+            def rate_for(pvp, foundation):
+                if program == "PVP":
+                    return main_rate
+                if program == "FOUNDATION":
+                    return foundation_rate if foundation_rate is not None else main_rate
+                return combined_daily_target(pvp, foundation, main_rate, foundation_rate)
+            daily_target = rate_for(manual.pvp_count, manual.foundation_count) if manual is not None else rate_for(
+                kairon_charts - kairon_foundation, kairon_foundation)
+            kairon_target_rate = rate_for(kairon_charts - kairon_foundation, kairon_foundation)
+            def adjusted_rate(rate):
+                return ((Decimal(rate) * target_minutes / FULL_WORKDAY_MINUTES).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    if rate is not None and target_minutes is not None else None)
+            adjusted_target = adjusted_rate(daily_target)
+            kairon_adjusted_target = adjusted_rate(kairon_target_rate)
             manual_efficiency_percent = (
                 _percent(manual_charts, adjusted_target) if adjusted_target is not None else None
             )
             kairon_efficiency_percent = (
-                _percent(kairon_charts, adjusted_target) if adjusted_target is not None else None
+                _percent(kairon_charts, kairon_adjusted_target) if kairon_adjusted_target is not None else None
             )
             manual_cpd = _cpd(manual_charts, target_minutes)
             kairon_cpd = _cpd(kairon_charts, target_minutes)
@@ -429,6 +453,8 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
                 calculated_days += 1
             if adjusted_target is not None:
                 total_adjusted_target += adjusted_target
+            if kairon_adjusted_target is not None:
+                total_kairon_target += kairon_adjusted_target
             if manual is not None and manual.adjusted_cpd is not None:
                 total_adjusted_cpd = (total_adjusted_cpd or Decimal("0")) + manual.adjusted_cpd
             if inside_minutes is not None:
@@ -477,7 +503,7 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
             "target_minutes": total_target_minutes,
             "calculated_days": calculated_days,
             "manual_efficiency_percent": _percent(total_manual_charts, total_adjusted_target),
-            "kairon_efficiency_percent": _percent(total_kairon_charts, total_adjusted_target),
+            "kairon_efficiency_percent": _percent(total_kairon_charts, total_kairon_target),
             "manual_cpd": _cpd(total_manual_charts, total_target_minutes),
             "kairon_cpd": _cpd(total_kairon_charts, total_target_minutes),
             "target_cpd": _cpd(total_adjusted_target, total_target_minutes),

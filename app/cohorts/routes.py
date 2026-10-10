@@ -15,6 +15,7 @@ from app.cohorts.schemas import (
     CoderStagePeriodListEnvelopeSchema,
     CodingUserSummaryListEnvelopeSchema,
     ChangeStageTargetSchema,
+    ChangeFoundationTargetSchema,
     CohortDetailEnvelopeSchema,
     CohortEnvelopeSchema,
     CohortJoinReviewEnvelopeSchema,
@@ -116,13 +117,7 @@ class TeamStageTargetChange(MethodView):
     @bp.arguments(ChangeStageTargetSchema)
     @bp.response(201, StageTargetRuleEnvelopeSchema)
     def post(self, data):
-        rule = change_stage_target(
-            g.user,
-            stage_code=data["stage_code"],
-            effective_from=data["effective_from"],
-            daily_target=data["daily_target"],
-            reason=data.get("reason"),
-        )
+        rule = change_stage_target(g.user, **data)
         return {"status": 201, "message": "Stage target changed successfully.", "data": rule}
 
 
@@ -387,3 +382,28 @@ class CoderStageExceptions(MethodView):
 
         compute_stage_periods(coder)  # this coder's downstream periods only
         return {"status": 201, "message": "Stage exception recorded successfully.", "data": exception}
+
+
+@bp.route("/team/foundation-target-rules")
+class FoundationTargets(MethodView):
+    @require_feature("user_management")
+    @require_role("manager")
+    @bp.response(200, StageTargetRuleListEnvelopeSchema)
+    def get(self):
+        from app.cohorts.models import FoundationTargetRule
+        if g.user.project is None or g.user.project.name != "CODING":
+            abort(403, message="Only a CODING manager may view Foundation targets.")
+        rules = FoundationTargetRule.query.order_by(FoundationTargetRule.stage_code, FoundationTargetRule.effective_from).all()
+        return {"status": 200, "message": "Foundation targets retrieved successfully.", "data": rules}
+
+
+@bp.route("/team/foundation-targets/change")
+class FoundationTargetChange(MethodView):
+    @require_feature("user_management")
+    @require_role("manager")
+    @bp.arguments(ChangeFoundationTargetSchema)
+    @bp.response(201, StageTargetRuleEnvelopeSchema)
+    def post(self, data):
+        from app.cohorts.stage_refresh import change_foundation_target
+        rule = change_foundation_target(g.user, **data)
+        return {"status": 201, "message": "Foundation target changed successfully.", "data": rule}

@@ -67,8 +67,11 @@ class ManualDailyRecord(db.Model):
     # Nullable for historical rows. The scalar fields remain the aggregate/legacy view.
     meetings = db.Column(db.JSON, nullable=True)
 
-    # Snapshots calculated on submission/import; reads and reviews preserve them.
-    daily_target = db.Column(db.Integer, nullable=True)
+    # Snapshots calculated on submission/import or an explicit target change.
+    # Reads and reviews preserve them; component rates explain mixed-day capacity.
+    daily_target = db.Column(db.Numeric(16, 6), nullable=True)
+    pvp_daily_target = db.Column(db.Integer, nullable=True)
+    foundation_daily_target = db.Column(db.Integer, nullable=True)
     adjusted_cpd = db.Column(db.Numeric(12, 2), nullable=True)
 
     status = db.Column(db.String(16), nullable=False, default="pending")

@@ -134,9 +134,10 @@ def test_coding_manager_creates_user_cohort_with_lead_member(api_client, manager
 
     status, body = api_client.login("test-manager@example.com", "test-password")
     assert status == 200, body
+    future_join = dt.date.today() + dt.timedelta(days=10)
     status, body = api_client.post(
         "/api/team/cohorts",
-        {"label": "Future Cohort", "windowStart": "2026-10-01", "memberIds": [lead.id]},
+        {"label": "Future Cohort", "windowStart": future_join.isoformat(), "memberIds": [lead.id]},
     )
     assert status == 201, body
     assert body["data"]["memberCount"] == 1
@@ -157,7 +158,7 @@ def test_coding_manager_creates_user_cohort_with_lead_member(api_client, manager
     upsert_own_record(
         lead.id,
         {
-            "record_date": dt.date(2026, 10, 2),
+            "record_date": future_join + dt.timedelta(days=1),
             "production_count": 1,
             "tech_issues_downtime_hours": 0,
             "no_inventory_idle_time_hours": 0,
@@ -166,8 +167,10 @@ def test_coding_manager_creates_user_cohort_with_lead_member(api_client, manager
         },
     )
     periods = {period.stage_code: period for period in UserStagePeriod.query.filter_by(user_id=lead.id).all()}
-    assert periods["Training"].end_date == dt.date(2026, 10, 1)
-    assert periods["M1"].start_date == dt.date(2026, 10, 2)
+    # Manual production no longer supplies a Kairon completion anchor.
+    assert periods["Training"].start_date == future_join
+    assert periods["Training"].end_date is None
+    assert "M1" not in periods
 
 
 def test_coding_manager_changes_target_without_rewriting_history(api_client, manager_user):

@@ -63,6 +63,8 @@ class DailyTargetSchema(Schema):
 
 
 class StageTargetRuleSchema(Schema):
+    recalculated_records = fields.Integer(dump_only=True, data_key="recalculatedRecords")
+    apply_from = fields.String(dump_only=True, data_key="applyFrom")
     id = fields.Integer(dump_only=True)
     stage_code = fields.String(required=True, validate=_validate_stage_code)
     effective_from = fields.Date(required=True)
@@ -85,9 +87,16 @@ class StageTargetRuleQuerySchema(Schema):
 
 class ChangeStageTargetSchema(Schema):
     stage_code = fields.String(required=True, validate=_validate_stage_code, data_key="stageCode")
-    effective_from = fields.Date(required=True, data_key="effectiveFrom")
-    daily_target = fields.Integer(required=True, validate=validate.Range(min=0), data_key="dailyTarget")
+    effective_from = fields.Date(load_default=None, data_key="effectiveFrom")
+    apply_from = fields.String(load_default=None, validate=validate.OneOf(["today", "program_start"]), data_key="applyFrom")
+    daily_target = fields.Integer(required=True, validate=validate.Range(min=0, max=2147483647), strict=True, data_key="dailyTarget")
     reason = fields.String(allow_none=True, load_default=None, validate=validate.Length(max=1000))
+
+
+    @validates_schema
+    def validate_scope(self, data, **kwargs):
+        if (data.get("apply_from") is None) == (data.get("effective_from") is None):
+            raise ValidationError("Choose applyFrom or effectiveFrom, but not both.")
 
 
 class TeamCohortCreateSchema(Schema):
@@ -124,6 +133,9 @@ class CodingUserSummarySchema(Schema):
     last_name = fields.String(dump_only=True, data_key="lastName")
     emp_id = fields.String(dump_only=True, data_key="empId")
     role_type = fields.Method("get_role_type", dump_only=True, data_key="roleType")
+    join_date = fields.Date(dump_only=True, allow_none=True, data_key="joinDate")
+    is_active = fields.Boolean(dump_only=True, data_key="isActive")
+    last_working_day = fields.Date(dump_only=True, allow_none=True, data_key="lastWorkingDay")
 
     def get_role_type(self, user):
         return user.role.role_type.code
@@ -135,12 +147,13 @@ class TeamCohortMemberSchema(Schema):
     current_stage = fields.Method("get_current_stage", dump_only=True, data_key="currentStage")
 
     def get_current_stage(self, membership):
-        from datetime import date
+        from app.cohorts.progression import business_today
 
+        today = business_today()
         period = UserStagePeriod.query.filter(
             UserStagePeriod.user_id == membership.user_id,
-            UserStagePeriod.start_date <= date.today(),
-            db.or_(UserStagePeriod.end_date.is_(None), UserStagePeriod.end_date >= date.today()),
+            UserStagePeriod.start_date <= today,
+            db.or_(UserStagePeriod.end_date.is_(None), UserStagePeriod.end_date >= today),
         ).first()
         return period.stage_code if period else None
 
@@ -164,7 +177,30 @@ class TeamCoderCohortSummarySchema(Schema):
     label = fields.String(dump_only=True)
 
 
+class StagePeriodSchema(Schema):
+    stage_code = fields.String(dump_only=True, data_key="stageCode")
+    start_date = fields.Date(dump_only=True, data_key="startDate")
+    end_date = fields.Date(dump_only=True, allow_none=True, data_key="endDate")
+    source = fields.String(dump_only=True)
+
+
+class FoundationProgressSchema(Schema):
+    eligibility = fields.String(dump_only=True)
+    first_pvp_completed = fields.Date(dump_only=True, allow_none=True, data_key="firstPvpCompleted")
+    first_foundation_completed = fields.Date(dump_only=True, allow_none=True, data_key="firstFoundationCompleted")
+    current_stage = fields.String(dump_only=True, allow_none=True, data_key="currentStage")
+    daily_target = fields.Integer(dump_only=True, allow_none=True, data_key="dailyTarget")
+    periods = fields.List(fields.Nested(StagePeriodSchema), dump_only=True)
+
+
 class TeamCoderOverviewItemSchema(Schema):
+    joined_on = fields.Date(dump_only=True, allow_none=True, data_key="joinedOn")
+    stage_as_of = fields.Date(dump_only=True, data_key="stageAsOf")
+    first_completed = fields.Date(dump_only=True, allow_none=True, data_key="firstCompleted")
+    refreshed_at = fields.DateTime(dump_only=True, allow_none=True, data_key="refreshedAt")
+    periods = fields.List(fields.Nested(StagePeriodSchema), dump_only=True)
+    foundation = fields.Nested(FoundationProgressSchema, dump_only=True)
+    data_issue = fields.String(dump_only=True, allow_none=True, data_key="dataIssue")
     coder = fields.Nested(CodingUserSummarySchema, dump_only=True)
     cohort = fields.Nested(TeamCoderCohortSummarySchema, dump_only=True, allow_none=True)
     current_stage = fields.String(dump_only=True, allow_none=True, data_key="currentStage")
@@ -253,3 +289,8 @@ StageExceptionEnvelopeSchema = envelope_schema(
 StageExceptionListEnvelopeSchema = envelope_schema(
     "StageExceptionListEnvelopeSchema", fields.List(fields.Nested(StageExceptionSchema))
 )
+
+
+class ChangeFoundationTargetSchema(ChangeStageTargetSchema):
+    stage_code = fields.String(required=True, data_key="stageCode",
+                               validate=validate.OneOf(["W1", "W2", "W3", "W4", "Steady State"]))

@@ -305,3 +305,56 @@ class KaironCompletion(db.Model):
 
     def __repr__(self):
         return f"<KaironCompletion coder_id={self.coder_id} mbi={self.mbi} date={self.completed_date}>"
+
+
+class UserStageEvidence(db.Model):
+    """Anchors from the last successfully completed Kairon refresh."""
+    __tablename__ = "user_stage_evidence"
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), primary_key=True)
+    first_completed = db.Column(db.Date, nullable=True)
+    first_pvp_completed = db.Column(db.Date, nullable=True)
+    first_foundation_completed = db.Column(db.Date, nullable=True)
+    refreshed_at = db.Column(db.DateTime(timezone=True), nullable=False, server_default=db.func.now())
+
+
+class FoundationTargetRule(db.Model):
+    __tablename__ = "foundation_target_rules"
+    __table_args__ = (
+        db.CheckConstraint("stage_code IN ('W1','W2','W3','W4','Steady State')", name="ck_foundation_target_stage"),
+        db.CheckConstraint("daily_target >= 0", name="ck_foundation_target_nonnegative"),
+        db.CheckConstraint("effective_to IS NULL OR effective_to > effective_from", name="ck_foundation_target_range"),
+        ExcludeConstraint(
+            (db.column("stage_code"), "="),
+            (text("daterange(effective_from, effective_to)"), "&&"),
+            using="gist", name="ex_foundation_target_no_overlap",
+        ),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    stage_code = db.Column(db.String(32), nullable=False)
+    effective_from = db.Column(db.Date, nullable=False)
+    effective_to = db.Column(db.Date, nullable=True)
+    daily_target = db.Column(db.Integer, nullable=False)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    reason = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, server_default=db.func.now())
+
+
+class StageTargetChange(db.Model):
+    """Immutable audit of a target replacement and its recalculation scope."""
+    __tablename__ = "stage_target_changes"
+    __table_args__ = (
+        db.CheckConstraint("program IN ('main','foundation')", name="ck_target_change_program"),
+        db.CheckConstraint("apply_from IN ('today','program_start','scheduled')", name="ck_target_change_scope"),
+        db.CheckConstraint("daily_target >= 0 AND recalculated_records >= 0", name="ck_target_change_nonnegative"),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    program = db.Column(db.String(16), nullable=False)
+    stage_code = db.Column(db.String(32), nullable=False)
+    apply_from = db.Column(db.String(16), nullable=False)
+    effective_from = db.Column(db.Date, nullable=False)
+    daily_target = db.Column(db.Integer, nullable=False)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    reason = db.Column(db.Text, nullable=True)
+    previous_rules = db.Column(db.JSON, nullable=False)
+    recalculated_records = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, server_default=db.func.now())

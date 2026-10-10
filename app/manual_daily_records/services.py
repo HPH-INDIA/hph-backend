@@ -13,7 +13,6 @@ from sqlalchemy import tuple_
 from datetime import datetime, timezone
 
 from app.extensions import db
-from app.cohorts.models import CohortMembership
 from app.manual_daily_records.models import (
     ManualDailyRecord,
     ManualImportBatch,
@@ -238,7 +237,6 @@ def import_manual_daily_records(file_base64, source_filename, record_date, uploa
     sheet_name, rows = _read_bulk_rows(workbook, uploaded_by_id)
     created_count = 0
     updated_count = 0
-    positive_user_ids = set()
     changed_records = []
 
     for data in rows:
@@ -261,16 +259,8 @@ def import_manual_daily_records(file_base64, source_filename, record_date, uploa
             record.meetings = None
         _set_submission_review(record, user, uploaded_by_id)
         changed_records.append(record)
-        if record.production_count > 0:
-            positive_user_ids.add(user.id)
 
     db.session.flush()
-    if positive_user_ids:
-        from app.cohorts.services import compute_user_stage_periods
-
-        memberships = CohortMembership.query.filter(CohortMembership.user_id.in_(positive_user_ids)).all()
-        for membership in memberships:
-            compute_user_stage_periods(membership)
     snapshot_manual_productivity(changed_records)
     db.session.commit()
     return {
@@ -364,7 +354,6 @@ def process_manual_import_chunk(batch_id, chunk_number, checksum, rows, uploaded
         ).all()
     }
     counts = {"created": 0, "updated": 0, "unchanged": 0}
-    positive_user_ids = set()
     changed_records = []
     for row in rows:
         key = (row["user_id"], row["record_date"])
@@ -390,8 +379,6 @@ def process_manual_import_chunk(batch_id, chunk_number, checksum, rows, uploaded
             record.meetings = None
         _set_submission_review(record, users_by_id[record.user_id], uploaded_by_id)
         changed_records.append(record)
-        if record.production_count > 0:
-            positive_user_ids.add(record.user_id)
 
     chunk = ManualImportChunk(
         batch_id=batch.id,
@@ -409,12 +396,6 @@ def process_manual_import_chunk(batch_id, chunk_number, checksum, rows, uploaded
     batch.unchanged_count += counts["unchanged"]
     db.session.flush()
 
-    if positive_user_ids:
-        from app.cohorts.services import compute_user_stage_periods
-
-        memberships = CohortMembership.query.filter(CohortMembership.user_id.in_(positive_user_ids)).all()
-        for membership in memberships:
-            compute_user_stage_periods(membership)
     snapshot_manual_productivity(changed_records)
     db.session.commit()
     return batch, chunk
@@ -481,16 +462,8 @@ def upsert_own_record(user_id, data):
 
     db.session.flush()
 
-    # A user's first real production day is the authoritative M1 start for
-    # future cohorts. Recompute from live facts so a lead and an employee
-    # progress identically and no scheduled refresh is required.
-    if record.production_count > 0:
-        from app.cohorts.models import CohortMembership
-        from app.cohorts.services import compute_user_stage_periods
-
-        membership = CohortMembership.query.filter_by(user_id=user_id).first()
-        if membership is not None:
-            compute_user_stage_periods(membership)
+    # Main stages are refreshed only from completed Kairon evidence. A manual
+    # submission snapshots the existing date-specific target without moving M1.
     snapshot_manual_productivity([record])
     db.session.commit()
     return record

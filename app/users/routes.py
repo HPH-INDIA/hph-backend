@@ -128,6 +128,7 @@ class Users(MethodView):
             first_name=data["first_name"],
             last_name=data["last_name"],
             emp_id=data["emp_id"],
+            join_date=data.get("join_date"),
             role_id=data["role_id"],
             project_id=data.get("project_id"),
             reports_to_id=data.get("reports_to_id"),
@@ -143,6 +144,8 @@ class Users(MethodView):
             _abort_duplicate_field(exc)
 
         _issue_temp_password(user)
+        from app.cohorts.stage_refresh import rebuild_main_periods
+        rebuild_main_periods(user)
         db.session.commit()
         return {"status": 201, "message": "User created successfully.", "data": user}
 
@@ -329,10 +332,19 @@ class UserDetail(MethodView):
             abort(400, message=str(exc))
         _enforce_reporting_scope(new_role, effective_reports_to_id)
 
-        for key in ("email", "first_name", "last_name", "emp_id", "role_id", "project_id", "reports_to_id"):
+        for key in ("email", "first_name", "last_name", "emp_id", "role_id", "project_id", "reports_to_id", "join_date"):
             if key in data:
                 setattr(user, key, data[key])
 
+        if "join_date" in data:
+            if user.last_working_day and user.join_date and user.join_date > user.last_working_day:
+                abort(400, message="Joining date cannot be after the last working day.")
+            from app.cohorts.stage_refresh import rebuild_main_periods
+            from app.cohorts.models import CohortMembership
+            membership = CohortMembership.query.filter_by(user_id=user.id).first()
+            if membership and user.join_date:
+                membership.joined_on = user.join_date
+            rebuild_main_periods(user)
         try:
             db.session.commit()
         except IntegrityError as exc:
@@ -349,8 +361,12 @@ class UserDetail(MethodView):
 
         # soft-delete, mirroring §1a's Feature "delete means deactivate" —
         # a hard delete would orphan sessions and other users' created_by_id
+        if user.join_date and data["last_working_day"] < user.join_date:
+            abort(400, message="Last working day cannot precede the joining date.")
         user.is_active = False
         user.last_working_day = data["last_working_day"]
+        from app.cohorts.stage_refresh import rebuild_main_periods
+        rebuild_main_periods(user)
         _revoke_active_sessions(user)
         db.session.commit()
         return {"status": 200, "message": "User deleted successfully.", "data": None}

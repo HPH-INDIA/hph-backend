@@ -25,6 +25,53 @@ def adjusted_cpd(record, daily_target):
         Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def combined_daily_target(pvp_count, foundation_count, main_target, foundation_target):
+    """Eight-hour capacity for the actual chart mix, using standard time.
+
+    Each chart earns 8 / its program target standard hours. The equivalent
+    raw-chart target is total charts / earned day fractions. No allocation
+    forecast or per-program hours are inferred. Without a weekly Foundation
+    rate, the existing main-stage rate covers all charts.
+    """
+    if foundation_target is None or foundation_target == main_target:
+        return main_target
+    pvp, foundation = Decimal(pvp_count or 0), Decimal(foundation_count or 0)
+    if not pvp and not foundation:
+        return None  # different rates, but no observed mix
+    if not foundation:
+        return main_target
+    if not pvp:
+        return foundation_target
+    if main_target is None or main_target <= 0 or foundation_target <= 0:
+        return None  # cannot assign standard time to a zero/missing quota
+    earned_days = pvp / Decimal(main_target) + foundation / Decimal(foundation_target)
+    return ((pvp + foundation) / earned_days).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+
+def foundation_targets_for(records):
+    """Resolve all date-specific Foundation rates in a constant query count."""
+    from app.cohorts.models import FoundationTargetRule, UserStageEvidence
+    from app.cohorts.progression import foundation_progress
+    from app.users.models import User
+    from app.extensions import db
+
+    if not records:
+        return {}
+    ids = {record.user_id for record in records}
+    evidence = {row.user_id: row for row in UserStageEvidence.query.filter(UserStageEvidence.user_id.in_(ids))}
+    departures = dict(db.session.query(User.id, User.last_working_day).filter(User.id.in_(ids)))
+    rules = FoundationTargetRule.query.all()
+    targets = {}
+    for record in records:
+        ev = evidence.get(record.user_id)
+        code = foundation_progress(ev.first_pvp_completed, ev.first_foundation_completed,
+                                   record.record_date, departures.get(record.user_id))["current_stage"] if ev else None
+        targets[record.id] = next((rule.daily_target for rule in rules
+                                   if rule.stage_code == code and rule.effective_from <= record.record_date
+                                   and (rule.effective_to is None or record.record_date < rule.effective_to)), None)
+    return targets
+
+
 def snapshot_manual_productivity(records):
     """Save targets after writes and stage recomputation, never during reads.
 
@@ -53,6 +100,10 @@ def snapshot_manual_productivity(records):
         db.or_(StageTargetRule.effective_to.is_(None),
                StageTargetRule.effective_to > ManualDailyRecord.record_date),
     )).filter(ManualDailyRecord.id.in_([record.id for record in records])).all())
+    foundation_targets = foundation_targets_for(records)
     for record in records:
-        record.daily_target = targets[record.id]
+        record.pvp_daily_target = targets[record.id]
+        record.foundation_daily_target = foundation_targets[record.id]
+        record.daily_target = combined_daily_target(record.pvp_count, record.foundation_count,
+                                                    record.pvp_daily_target, record.foundation_daily_target)
         record.adjusted_cpd = adjusted_cpd(record, record.daily_target)

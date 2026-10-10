@@ -121,11 +121,12 @@ def _membership(user, assigned_by):
     _period(user, "Training", cohort.window_start)
 
 
-def test_first_production_stage_is_recomputed_before_snapshot(employee_user, superadmin):
+def test_manual_production_without_kairon_keeps_training(employee_user, superadmin):
     _membership(employee_user, superadmin)
     record = upsert_own_record(employee_user.id, _entry())
-    assert record.daily_target == 7
-    assert record.adjusted_cpd == Decimal("4.38")
+    assert record.daily_target is None
+    assert record.adjusted_cpd is None
+    assert UserStagePeriod.query.filter_by(user_id=employee_user.id).one().stage_code == "Training"
 
 
 @pytest.mark.parametrize("stage", [None, "Training"])
@@ -159,6 +160,12 @@ def test_imports_snapshot_after_stage_updates_and_preserve_unchanged_rows(
 ):
     if first_production:
         _membership(import_employee, superadmin)
+        # Production starts only after a completed Kairon chart, before the
+        # manual upload whose saved CPD this test exercises.
+        from app.kairon.services import import_batch
+        import_batch(DAY, [dict(program="PVP", level="1LR", status="Completed",
+                               coding_analyst=f"{import_employee.first_name} {import_employee.last_name}",
+                               created_date=DAY, completed_date=DAY)], manager_user.id)
     else:
         _period(import_employee)
 

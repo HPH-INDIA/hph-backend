@@ -1,6 +1,7 @@
 from marshmallow import Schema, ValidationError, fields, validate, validates_schema
 
 from app.responses import envelope_schema
+from app.reports.holds import HOLD_AGE_BUCKETS, HOLD_SORT_COLUMNS
 from app.kairon.schemas import KaironChartRecordSchema
 from app.manual_daily_records.schemas import ManualDailyRecordQuerySchema, ManualDailyRecordSchema
 
@@ -340,7 +341,7 @@ class CodingDashboardManualSchema(Schema):
 class DailyEfficiencySchema(Schema):
     date = fields.Date(dump_only=True)
     stage = fields.String(dump_only=True, allow_none=True)
-    daily_target = fields.Integer(dump_only=True, allow_none=True, data_key="dailyTarget")
+    daily_target = fields.Float(dump_only=True, allow_none=True, data_key="dailyTarget")
     manual_charts = fields.Integer(dump_only=True, data_key="manualCharts")
     kairon_charts = fields.Integer(dump_only=True, data_key="kaironCharts")
     inside_minutes = fields.Integer(dump_only=True, allow_none=True, data_key="insideMinutes")
@@ -509,3 +510,46 @@ class ManagerDashboardSchema(Schema):
 
 
 ManagerDashboardEnvelopeSchema = envelope_schema("ManagerDashboardEnvelopeSchema", fields.Nested(ManagerDashboardSchema))
+
+
+
+class KaironHoldQuerySchema(PaginationQuerySchema):
+    age_bucket = fields.String(load_default=None, validate=validate.OneOf(HOLD_AGE_BUCKETS), data_key="ageBucket")
+    sort_by = fields.String(load_default="created", validate=validate.OneOf(HOLD_SORT_COLUMNS), data_key="sortBy")
+    sort_direction = fields.String(load_default="desc", validate=validate.OneOf(["asc", "desc"]), data_key="sortDirection")
+    view = fields.String(load_default="all", validate=validate.OneOf(["all", "coders", "leads"]))
+    user_id = fields.Integer(load_default=None, validate=validate.Range(min=1), data_key="userId")
+    lead_id = fields.String(load_default=None, validate=validate.Regexp(r"^(unassigned|[1-9][0-9]*)$"), data_key="leadId")
+    created_from = fields.Date(load_default=None, data_key="createdFrom")
+    created_to = fields.Date(load_default=None, data_key="createdTo")
+    practice = fields.String(load_default=None, validate=validate.Length(min=1, max=255))
+    without_practice = fields.Boolean(load_default=False, data_key="withoutPractice")
+
+    @validates_schema
+    def validate_filters(self, data, **kwargs):
+        if data.get("created_from") and data.get("created_to") and data["created_from"] > data["created_to"]:
+            raise ValidationError("Created to must be on or after created from.", field_name="createdTo")
+        if data.get("practice") and data.get("without_practice"):
+            raise ValidationError("Choose a practice or no practice, not both.", field_name="practice")
+
+
+class KaironHoldUserSchema(Schema):
+    id = fields.Integer(dump_only=True)
+    name = fields.String(dump_only=True)
+    role_type = fields.String(dump_only=True, data_key="roleType")
+    lead_id = fields.Integer(dump_only=True, allow_none=True, data_key="leadId")
+    count = fields.Integer(dump_only=True)
+
+
+class KaironHoldSummarySchema(Schema):
+    age_buckets = fields.Dict(keys=fields.String(), values=fields.Integer(), dump_only=True, data_key="ageBuckets")
+    total = fields.Integer(dump_only=True)
+    coder_count = fields.Integer(dump_only=True, data_key="coderCount")
+    lead_count = fields.Integer(dump_only=True, data_key="leadCount")
+    users = fields.List(fields.Nested(KaironHoldUserSchema), dump_only=True)
+    practices = fields.List(fields.String(), dump_only=True)
+
+
+KaironHoldSummaryEnvelopeSchema = envelope_schema(
+    "KaironHoldSummaryEnvelopeSchema", fields.Nested(KaironHoldSummarySchema)
+)

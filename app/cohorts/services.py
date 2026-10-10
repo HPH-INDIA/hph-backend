@@ -262,92 +262,11 @@ def eligible_coding_users_for_manager(manager):
 
 
 def get_team_coder_overview(manager, page, page_size, cohort_id=None, lead_id=None, stage_code=None):
-    """Paginated current-state view of every coder in a manager's CODING team."""
-    eligible_ids = [user.id for user in eligible_coding_users_for_manager(manager)]
-    query = User.query.filter(User.id.in_(eligible_ids))
-
-    if cohort_id == 0:
-        query = query.filter(
-            User.id.notin_(db.session.query(CohortMembership.user_id))
-        )
-    elif cohort_id is not None:
-        if db.session.get(Cohort, cohort_id) is None:
-            abort(400, message="cohortId must reference an existing cohort.")
-        query = query.filter(
-            User.id.in_(
-                db.session.query(CohortMembership.user_id).filter(
-                    CohortMembership.cohort_id == cohort_id
-                )
-            )
-        )
-
-    if lead_id == 0:
-        query = query.join(Role).join(RoleType).filter(
-            RoleType.code == "employee", User.reports_to_id.is_(None)
-        )
-    elif lead_id is not None:
-        lead_team_ids = manager_lead_team_user_ids(manager.id, lead_id)
-        if lead_team_ids is None:
-            abort(400, message="leadId must reference an active lead in your team.")
-        query = query.filter(User.id.in_(lead_team_ids))
-
-    today = date.today()
-    current_period_user_ids = db.session.query(UserStagePeriod.user_id).filter(
-        UserStagePeriod.start_date <= today,
-        db.or_(UserStagePeriod.end_date.is_(None), UserStagePeriod.end_date >= today),
-    )
-    if stage_code == "Unassigned":
-        query = query.filter(User.id.notin_(current_period_user_ids))
-    elif stage_code is not None:
-        query = query.filter(
-            User.id.in_(current_period_user_ids.filter(UserStagePeriod.stage_code == stage_code))
-        )
-
-    total = query.order_by(None).count()
-    users = (
-        query.order_by(User.first_name, User.last_name, User.id)
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    items = []
-    for user in users:
-        membership = CohortMembership.query.filter_by(user_id=user.id).first()
-        period = UserStagePeriod.query.filter(
-            UserStagePeriod.user_id == user.id,
-            UserStagePeriod.start_date <= today,
-            db.or_(UserStagePeriod.end_date.is_(None), UserStagePeriod.end_date >= today),
-        ).first()
-        lead = user if user.role.role_type.code == "lead" else user.reports_to
-        if lead is not None and lead.role.role_type.code != "lead":
-            lead = None
-        items.append(
-            {
-                "coder": user,
-                "cohort": membership.cohort if membership else None,
-                "current_stage": period.stage_code if period else None,
-                "daily_target": target_for_period(period, today),
-                "lead": lead,
-            }
-        )
-
-    return {
-        "items": items,
-        "page": page,
-        "page_size": page_size,
-        "total": total,
-        "total_pages": (total + page_size - 1) // page_size,
-    }
+    from app.cohorts.stage_refresh import team_stage_overview
+    return team_stage_overview(manager, page, page_size, cohort_id, lead_id, stage_code)
 
 
 def first_user_activity_date(user_id):
-    manual_date = (
-        db.session.query(db.func.min(ManualDailyRecord.record_date))
-        .filter(ManualDailyRecord.user_id == user_id, ManualDailyRecord.production_count > 0)
-        .scalar()
-    )
-    if manual_date is not None:
-        return manual_date
     return (
         db.session.query(db.func.min(KaironChartRecord.completed_date))
         .join(KaironUploadBatch)
@@ -356,49 +275,16 @@ def first_user_activity_date(user_id):
             KaironChartRecord.status == "Completed",
             KaironChartRecord.completed_date.isnot(None),
             KaironUploadBatch.superseded_at.is_(None),
+            KaironUploadBatch.status == "completed",
         )
         .scalar()
     )
 
 
 def compute_user_stage_periods(membership, stages_by_code=None):
-    """Build the Training -> Steady State path directly against ``users.id``."""
-    if stages_by_code is None:
-        stages_by_code = load_stages_by_code()
-
-    periods = [
-        {
-            "stage_code": TRAINING_STAGE,
-            "start_date": membership.joined_on,
-            "end_date": None,
-            "source": "observed_first_activity",
-            "shifted_by_exception_days": 0,
-        }
-    ]
-    m1_start = first_user_activity_date(membership.user_id)
-    if m1_start is not None and m1_start >= membership.joined_on:
-        periods[0]["end_date"] = m1_start - timedelta(days=1)
-        cursor = m1_start
-        for stage_code in STAGE_PATH_AFTER_TRAINING:
-            stage = stages_by_code[stage_code]
-            end = None if stage.duration_days is None else cursor + timedelta(days=stage.duration_days - 1)
-            periods.append(
-                {
-                    "stage_code": stage_code,
-                    "start_date": cursor,
-                    "end_date": end,
-                    "source": "calendar_offset",
-                    "shifted_by_exception_days": 0,
-                }
-            )
-            if end is None:
-                break
-            cursor = end + timedelta(days=1)
-
-    UserStagePeriod.query.filter_by(user_id=membership.user_id).delete()
-    rows = [UserStagePeriod(user_id=membership.user_id, **period) for period in periods]
-    db.session.add_all(rows)
-    return rows
+    from app.cohorts.stage_refresh import rebuild_main_periods
+    user = membership if isinstance(membership, User) else membership.user
+    return rebuild_main_periods(user)
 
 
 def create_user_cohort(manager, label, window_start, member_ids, window_end=None):
@@ -435,7 +321,7 @@ def create_user_cohort(manager, label, window_start, member_ids, window_end=None
         membership = CohortMembership(
             cohort_id=cohort.id,
             user_id=user_id,
-            joined_on=window_start,
+            joined_on=eligible[user_id].join_date or window_start,
             assigned_by_id=manager.id,
         )
         db.session.add(membership)
@@ -446,48 +332,7 @@ def create_user_cohort(manager, label, window_start, member_ids, window_end=None
     return cohort
 
 
-def change_stage_target(actor, stage_code, effective_from, daily_target, reason=None):
-    """Atomically close the prior target rule and start a new version."""
-    if actor.project is None or actor.project.name != "CODING":
-        abort(403, message="Only a CODING manager may configure stage targets.")
-    if stage_code not in TARGET_STAGES:
-        abort(400, message="Targets can only be configured for M1, M2, M3, M4, or Steady State.")
-    if effective_from < date.today():
-        abort(400, message="Managers may only change a target from today or a future date.")
-
-    current = (
-        StageTargetRule.query.filter(
-            StageTargetRule.stage_code == stage_code,
-            StageTargetRule.effective_from <= effective_from,
-            db.or_(StageTargetRule.effective_to.is_(None), StageTargetRule.effective_to > effective_from),
-        )
-        .with_for_update()
-        .first()
-    )
-    if current is None:
-        abort(409, message="No current target rule covers the selected effective date.")
-    if current.effective_from == effective_from:
-        abort(409, message="A target rule already begins on the selected effective date.")
-    future = StageTargetRule.query.filter(
-        StageTargetRule.stage_code == stage_code,
-        StageTargetRule.effective_from > effective_from,
-    ).first()
-    if future is not None:
-        abort(409, message="A future target change is already scheduled for this stage.")
-
-    current.effective_to = effective_from
-    rule = StageTargetRule(
-        stage_code=stage_code,
-        effective_from=effective_from,
-        effective_to=None,
-        daily_target=daily_target,
-        created_by_id=actor.id,
-        reason=reason,
-    )
-    db.session.add(rule)
-    try:
-        db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-        abort(409, message="This target change conflicts with an existing effective period.")
-    return rule
+def change_stage_target(actor, stage_code, effective_from=None, daily_target=None, reason=None, apply_from=None):
+    from app.cohorts.target_changes import change_target
+    return change_target(actor, stage_code, daily_target, effective_from=effective_from,
+                         apply_from=apply_from, reason=reason)

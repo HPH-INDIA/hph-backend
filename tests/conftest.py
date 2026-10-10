@@ -39,6 +39,8 @@ _COHORT_MODULE_TABLES_FK_ORDER = (
     "storage_imports",
     "login_hour_records",
     "login_hours_upload_batches",
+    "stage_target_changes",
+    "user_stage_evidence",
     "user_stage_periods",
     "cohort_memberships",
     "stage_exceptions",
@@ -105,6 +107,10 @@ def _clean_cohorts_tables(app):
         from app.storage_imports.models import StorageImportSlot
         db.session.add_all([StorageImportSlot(kind="kairon"), StorageImportSlot(kind="manual")])
         db.session.execute(text("DELETE FROM stage_target_rules"))
+        db.session.execute(text("DELETE FROM foundation_target_rules"))
+        db.session.execute(text("""INSERT INTO foundation_target_rules(stage_code,effective_from,daily_target)
+            VALUES ('W1','1900-01-01',7),('W2','1900-01-01',14),('W3','1900-01-01',20),
+                   ('W4','1900-01-01',30),('Steady State','1900-01-01',30)"""))
         superadmin = User.query.join(Role).join(RoleType).filter(RoleType.code == "super_admin").first()
         for stage_code, target in _SEED_STAGE_TARGETS.items():
             db.session.add(

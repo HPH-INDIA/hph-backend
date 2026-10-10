@@ -22,6 +22,8 @@ from app.reports.schemas import (
     KaironCompletedRecordQuerySchema,
     KaironCompletedUserPageEnvelopeSchema,
     KaironCompletedUserQuerySchema,
+    KaironHoldQuerySchema,
+    KaironHoldSummaryEnvelopeSchema,
     KaironLeadTeamRangeEnvelopeSchema,
     KaironManagerTeamRangeEnvelopeSchema,
     KaironRecordPageEnvelopeSchema,
@@ -43,6 +45,7 @@ from app.reports.schemas import (
     SelfKaironChartQuerySchema,
     SelfManualRecordsQuerySchema,
 )
+from app.reports.holds import hold_members, hold_query, hold_summary, order_holds
 from app.reports.lead_dashboard import get_lead_dashboard
 from app.reports.manager_dashboard import get_manager_dashboard
 from app.reports.services import (
@@ -506,3 +509,28 @@ class ManagerDashboard(MethodView):
             lead_id=args.get("lead_id"), coder_id=args.get("coder_id"),
             cohort_id=args.get("cohort_id"), program=args.get("program"), goal_to_date=goal_to_date)
         return {"status": 200, "message": "Manager performance retrieved successfully.", "data": result}
+
+
+@bp.route("/reports/kairon/holds")
+class ReportsKaironHolds(MethodView):
+    @require_feature(REPORTS_FEATURE)
+    @require_role_types("employee", "lead", "manager")
+    @bp.arguments(KaironHoldQuerySchema, location="query")
+    @bp.response(200, KaironRecordPageEnvelopeSchema)
+    def get(self, args):
+        query = order_holds(hold_query(hold_members(g.user), args), args)
+        return {"status": 200, "message": "Current chart holds retrieved successfully.", "data": _page(query, args)}
+
+
+@bp.route("/reports/kairon/holds-summary")
+class ReportsKaironHoldsSummary(MethodView):
+    @require_feature(REPORTS_FEATURE)
+    @require_role_types("employee", "lead", "manager")
+    @bp.arguments(KaironHoldQuerySchema, location="query")
+    @bp.response(200, KaironHoldSummaryEnvelopeSchema)
+    def get(self, args):
+        return {
+            "status": 200,
+            "message": "Current chart hold summary retrieved successfully.",
+            "data": hold_summary(hold_members(g.user), args),
+        }

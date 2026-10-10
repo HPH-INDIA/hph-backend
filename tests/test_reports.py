@@ -144,6 +144,15 @@ def test_resolve_dashboard_window_rejects_invalid_month():
     assert exc_info.value.code == 400
 
 
+
+def _steady_state_kairon_history(user, uploaded_by_id):
+    # A completed chart four 30-day stages before the report window makes
+    # Steady State source-backed instead of relying on a manual override.
+    import_batch(dt.date(2026, 5, 1),
+                 [_kairon_row(user, "Completed", completed_date=dt.date(2026, 5, 1),
+                              created_date=dt.date(2026, 5, 1))], uploaded_by_id=uploaded_by_id)
+
+
 def test_monthly_goal_excludes_weekends_holiday_and_full_leave_day():
     user = _get_or_create_user(
         "reports-monthly-goal@example.com", "Monthly", "Goal", "TEST-RPT-MONTHLY-GOAL"
@@ -159,6 +168,7 @@ def test_monthly_goal_excludes_weekends_holiday_and_full_leave_day():
             shifted_by_exception_days=0,
         )
     )
+    _steady_state_kairon_history(user, manager_id)
     import_batch(
         dt.date(2026, 9, 20),
         [
@@ -277,6 +287,7 @@ def test_efficiency_prorates_target_caps_overtime_and_caps_display(employee_user
             )
         )
     db.session.commit()
+    _steady_state_kairon_history(employee_user, manager_user.id)
 
     upsert_own_record(employee_user.id, _manual_entry(record_date=dt.date(2026, 9, 1), production_count=15,
                                                        tech_issues_downtime_hours=0,
@@ -392,6 +403,7 @@ def test_daily_refresh_target_includes_kairon_only_days(employee_user, manager_u
         )
     )
     db.session.commit()
+    _steady_state_kairon_history(employee_user, manager_user.id)
     import_batch(
         work_date,
         [_kairon_row(employee_user, "Completed", completed_date=work_date)],
@@ -441,6 +453,7 @@ def test_my_efficiency_endpoint_is_self_scoped(api_client, employee_user, manage
         )
     )
     db.session.commit()
+    _steady_state_kairon_history(employee_user, manager_user.id)
     upsert_own_record(
         employee_user.id,
         _manual_entry(

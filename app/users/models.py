@@ -30,6 +30,7 @@ class User(db.Model):
     first_login = db.Column(db.Boolean, nullable=False, default=True)
     temp_password_expires_at = db.Column(db.DateTime(timezone=True), nullable=True)
     is_active = db.Column(db.Boolean, nullable=False, default=True)
+    join_date = db.Column(db.Date, nullable=True)
     last_working_day = db.Column(db.Date, nullable=True)
     created_by_id = db.Column(
         db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
