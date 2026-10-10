@@ -134,7 +134,7 @@ def _coding_users_by_name():
     users = (
         User.query.join(Role)
         .join(RoleType)
-        .join(Project)
+        .join(Project, User.project_id == Project.id)
         .filter(
             User.is_active.is_(True),
             Project.name == "CODING",

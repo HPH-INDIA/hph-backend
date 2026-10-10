@@ -249,7 +249,7 @@ def eligible_coding_users_for_manager(manager):
     return (
         User.query.join(Role)
         .join(RoleType)
-        .join(Project)
+        .join(Project, User.project_id == Project.id)
         .filter(
             User.id.in_(team_ids),
             User.is_active.is_(True),

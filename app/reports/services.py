@@ -833,7 +833,7 @@ def get_coding_dashboard(from_date, to_date, program=None, lead_id=None, cohort_
     users_query = (
         User.query.join(Role)
         .join(RoleType)
-        .join(Project)
+        .join(Project, User.project_id == Project.id)
         .filter(
             Project.name == "CODING",
             RoleType.code.in_(("lead", "employee")),

@@ -18,7 +18,7 @@ from app.users.models import Project, User
 
 
 def coding_users_query():
-    return User.query.join(Role).join(RoleType).join(Project).filter(
+    return User.query.join(Role).join(RoleType).join(Project, User.project_id == Project.id).filter(
         Project.name == "CODING", RoleType.code.in_(("lead", "employee")))
 
 
