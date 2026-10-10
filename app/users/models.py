@@ -7,6 +7,12 @@ class Project(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(64), unique=True, nullable=False)
 
+    metric_theme = db.Column(db.JSON, nullable=True)
+    metric_theme_updated_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    metric_theme_updated_by_id = db.Column(
+        db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     def __repr__(self):
         return f"<Project {self.name}>"
 
@@ -44,7 +50,7 @@ class User(db.Model):
     )
 
     role = db.relationship("Role")
-    project = db.relationship("Project")
+    project = db.relationship("Project", foreign_keys=[project_id])
     created_by = db.relationship("User", remote_side=[id], foreign_keys=[created_by_id])
     reports_to = db.relationship(
         "User",

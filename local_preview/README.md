@@ -1,3 +1,8 @@
+> Superseded by the main API integration in `app/projects/metric_theme.py`.
+> Use the regular backend and migration `aa10c0d4e201`; see
+> `docs/project-metric-theme.md`. This older preview service is retained for
+> reference and should not be used for new saves.
+
 # Local shared-theme preview
 
 Run the existing business API on port 8083, then run this isolated extension on 8084:
