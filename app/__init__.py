@@ -117,6 +117,8 @@ def create_app():
     from app.cohorts.commands import import_legacy_data_command
     from app.mailing.commands import mail_smoke_test_command
 
+    from app.cohorts.refresh_stages import refresh_user_stages_command
+    app.cli.add_command(refresh_user_stages_command)
     app.cli.add_command(import_legacy_data_command)
     app.cli.add_command(mail_smoke_test_command)
     from app.storage_imports.commands import process_file_imports, setup_import_storage

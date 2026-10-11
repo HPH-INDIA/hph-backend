@@ -169,8 +169,8 @@ def test_coding_manager_creates_user_cohort_with_lead_member(api_client, manager
     periods = {period.stage_code: period for period in UserStagePeriod.query.filter_by(user_id=lead.id).all()}
     # Manual production no longer supplies a Kairon completion anchor.
     assert periods["Training"].start_date == future_join
-    assert periods["Training"].end_date is None
-    assert "M1" not in periods
+    assert periods["Training"].end_date == future_join + dt.timedelta(days=13)
+    assert periods["M1"].start_date == future_join + dt.timedelta(days=14)
 
 
 def test_coding_manager_changes_target_without_rewriting_history(api_client, manager_user):

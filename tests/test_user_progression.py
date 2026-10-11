@@ -45,16 +45,17 @@ def periods(user):
     return {p.stage_code: p for p in UserStagePeriod.query.filter_by(user_id=user.id).all()}
 
 
-def test_main_day_boundaries_and_known_training_start():
-    joined, first = date(2026, 4, 6), date(2026, 4, 20)
-    path = main_periods(joined, first)
-    assert path[0]["start_date"] == joined
-    assert path[0]["end_date"] == date(2026, 4, 19)
-    for offset, expected in [(0, "M1"), (29, "M1"), (30, "M2"), (59, "M2"), (60, "M3"), (89, "M3"), (90, "M4"), (119, "M4"), (120, "Steady State")]:
-        assert period_on(path, first + timedelta(days=offset))["stage_code"] == expected
-    assert main_periods(joined, None)[0]["end_date"] is None
-    assert [p["stage_code"] for p in main_periods(joined, joined)][0] == "M1"
-    assert all(p["end_date"] is None or p["end_date"] >= p["start_date"] for p in path)
+@pytest.mark.parametrize("completion", [None,date(2026,4,6),date(2026,4,1),date(2026,5,1)])
+def test_main_day_boundaries_and_known_training_start(completion):
+    joined, first = date(2026,4,6),date(2026,4,20)
+    path=main_periods(joined,completion)
+    assert path[0]["start_date"]==joined and path[0]["end_date"]==date(2026,4,19)
+    assert period_on(path,joined)["stage_code"]=="Training"
+    assert period_on(path,joined+timedelta(days=13))["stage_code"]=="Training"
+    for offset,expected in [(0,"M1"),(29,"M1"),(30,"M2"),(59,"M2"),(60,"M3"),(89,"M3"),(90,"M4"),(119,"M4"),(120,"Steady State")]:
+        assert period_on(path,first+timedelta(days=offset))["stage_code"]==expected
+    assert main_periods(None,completion)==[]
+    assert all(p["end_date"] is None or p["end_date"]>=p["start_date"] for p in path)
 
 
 @pytest.mark.parametrize("offset,expected", [(0,"W1"),(6,"W1"),(7,"W2"),(13,"W2"),(14,"W3"),(20,"W3"),(21,"W4"),(27,"W4"),(28,"Steady State")])
@@ -68,20 +69,20 @@ def test_foundation_calendar_boundaries(offset, expected):
 
 @pytest.mark.parametrize("pvp,foundation,expected", [
     (None,None,"awaiting_foundation"), (date(2026,4,20),None,"awaiting_foundation"),
-    (None,date(2026,9,16),"foundation_first"), (date(2026,9,17),date(2026,9,16),"foundation_first"),
-    (date(2026,9,16),date(2026,9,16),"same_day_unknown"),
+    (None,date(2026,9,16),"eligible"), (date(2026,9,17),date(2026,9,16),"eligible"),
+    (date(2026,9,16),date(2026,9,16),"eligible"),
 ])
 def test_foundation_eligibility(pvp, foundation, expected):
     result = foundation_progress(pvp, foundation, date(2026,10,8))
     assert result["eligibility"] == expected
-    assert result["periods"] == []
-    assert result["current_stage"] is None
+    assert bool(result["periods"]) == (foundation is not None)
+    assert result["current_stage"] == ("W4" if foundation else None)
 
 
 def test_departure_caps_both_timelines():
     last = date(2026,9,15)
     path = main_periods(date(2026,5,4),date(2026,5,21),last)
-    assert path[-1]["stage_code"] == "M4"
+    assert path[-1]["stage_code"] == "Steady State"
     assert path[-1]["end_date"] == last
     assert period_on(path,last + timedelta(days=1)) is None
     foundation = foundation_progress(date(2026,5,21),date(2026,9,10),last,last)
@@ -95,7 +96,8 @@ def test_refresh_uses_completion_not_created_or_manual_and_waits_for_finalizatio
     rebuild_main_periods(user)
     db.session.commit()
     batch = upload(manager_user,[chart(user), chart(user,mbi="FOUNDATION",program="FOUNDATION",created_date=date(2026,4,1),completed_date=date(2026,9,16))],finish=False)
-    assert list(periods(user)) == ["Training"]
+    assert len(periods(user)) == 6
+    assert periods(user)["M1"].start_date == date(2026,4,20)
     assert db.session.get(UserStageEvidence,user.id) is None
     complete_cumulative_import(batch.id)
     assert periods(user)["M1"].start_date == date(2026,4,20)
@@ -111,15 +113,17 @@ def test_corrections_reassignment_and_retries_refresh_old_owner(manager_user):
     row = chart(first)
     upload(manager_user,[row])
     upload(manager_user,[dict(row,completed_date=date(2026,4,22))])
-    assert periods(first)["M1"].start_date == date(2026,4,22)
+    assert periods(first)["M1"].start_date == date(2026,4,20)
     batch = upload(manager_user,[dict(row,coding_analyst=f"{second.first_name} {second.last_name}")])
-    assert list(periods(first)) == ["Training"]
+    assert len(periods(first)) == 6
+    assert periods(first)["M1"].start_date == date(2026,4,20)
     assert db.session.get(UserStageEvidence,first.id).first_completed is None
     assert periods(second)["M1"].start_date == date(2026,4,20)
     complete_cumulative_import(batch.id)
     assert len(periods(second)) == 6
     upload(manager_user,[dict(row,coding_analyst=f"{second.first_name} {second.last_name}", status="Active",completed_date=None)])
-    assert list(periods(second)) == ["Training"]
+    assert len(periods(second)) == 6
+    assert periods(second)["M1"].start_date == date(2026,4,20)
 
 
 def test_legacy_snapshot_refresh_and_superseded_completions(manager_user):
@@ -128,7 +132,7 @@ def test_legacy_snapshot_refresh_and_superseded_completions(manager_user):
     assert old.status == "completed"
     assert periods(user)["M1"].start_date == date(2026,4,20)
     import_batch(date(2026,9,1),[chart(user,completed_date=date(2026,4,25))],manager_user.id)
-    assert periods(user)["M1"].start_date == date(2026,4,25)
+    assert periods(user)["M1"].start_date == date(2026,4,20)
 
 
 def test_stage_refresh_failure_does_not_publish_completed_status(manager_user, monkeypatch):
@@ -143,7 +147,8 @@ def test_stage_refresh_failure_does_not_publish_completed_status(manager_user, m
     assert db.session.get(KaironUploadBatch,batch.id).status == "uploading"
 
 
-def test_teams_includes_no_cohort_training_and_departed_user(api_client, manager_user):
+def test_teams_includes_no_cohort_training_and_departed_user(api_client, manager_user, monkeypatch):
+    monkeypatch.setattr("app.cohorts.stage_refresh.business_today",lambda:date(2026,10,11))
     training, left = user_for(manager_user), user_for(manager_user)
     training.join_date = date(2026,7,6)
     left.is_active = False
@@ -158,9 +163,9 @@ def test_teams_includes_no_cohort_training_and_departed_user(api_client, manager
         assert status == 200, next_page
         rows.update({r["coder"]["id"]:r for r in next_page["data"]["items"]})
     assert rows[training.id]["periods"][0]["startDate"] == "2026-07-06"
-    assert rows[training.id]["currentStage"] == "Training"
+    assert rows[training.id]["currentStage"] == "M3"
     assert rows[left.id]["coder"]["lastWorkingDay"] == "2026-09-15"
-    assert rows[left.id]["currentStage"] == "M4"
+    assert rows[left.id]["currentStage"] == "Steady State"
     assert rows[left.id]["periods"][-1]["endDate"] == "2026-09-15"
 
 
@@ -191,6 +196,7 @@ def test_join_date_patch_rebuilds_training_and_departure(api_client,manager_user
     assert status == 200,body
     assert body["data"]["join_date"] == "2026-04-01"
     assert periods(user)["Training"].start_date == date(2026,4,1)
+    assert periods(user)["M1"].start_date == date(2026,4,15)
     status,body = api_client.delete(f"/api/users/{user.id}", {"last_working_day":"2026-04-25"})
     assert status == 200,body
     assert periods(user)["M1"].end_date == date(2026,4,25)

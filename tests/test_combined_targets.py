@@ -68,14 +68,14 @@ def test_changed_main_rate_also_recalculates_mixed_foundation_day(manager_user,e
 
 
 @pytest.mark.parametrize('order',['foundation_first','same_day'])
-def test_ineligible_foundation_does_not_use_weekly_target(employee_user,order):
+def test_foundation_first_and_same_day_use_weekly_target(employee_user,order):
     records=mixed_records(employee_user)
     ev=db.session.get(UserStageEvidence,employee_user.id)
     ev.first_pvp_completed=ev.first_foundation_completed+(timedelta(days=1) if order=='foundation_first' else timedelta(0))
     snapshot_manual_productivity(records)
     db.session.commit()
-    assert records[0].foundation_daily_target is None
-    assert records[0].daily_target==30 and records[0].adjusted_cpd==Decimal('18.75')
+    assert records[0].foundation_daily_target == 7
+    assert records[0].daily_target==Decimal("19.384615") and records[0].adjusted_cpd==Decimal("12.12")
 
 
 def test_missing_mix_does_not_invent_combined_target(employee_user):

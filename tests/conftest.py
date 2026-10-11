@@ -40,6 +40,7 @@ _COHORT_MODULE_TABLES_FK_ORDER = (
     "login_hour_records",
     "login_hours_upload_batches",
     "stage_target_changes",
+    "user_stage_changes",
     "user_stage_evidence",
     "user_stage_periods",
     "cohort_memberships",

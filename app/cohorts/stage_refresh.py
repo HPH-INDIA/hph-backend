@@ -13,7 +13,7 @@ from app.cohorts.progression import business_today, foundation_progress, main_pe
 from app.extensions import db
 from app.kairon.models import KaironChartRecord, KaironUploadBatch
 from app.roles.models import Role, RoleType
-from app.users.hierarchy import manager_team_user_ids
+from app.cohorts.access import stage_reader_user_ids
 from app.users.models import Project, User
 
 
@@ -47,6 +47,8 @@ def refresh_all_user_stages():
     memberships = {m.user_id: m for m in CohortMembership.query.all()}
     now = datetime.now(timezone.utc)
     users = coding_users_query().order_by(User.id).all()
+    from app.cohorts.stage_changes import stage_changes_by_user
+    changes = stage_changes_by_user([u.id for u in users], "main")
     for user in users:
         evidence = evidence_by_user.get(user.id)
         if evidence is None:
@@ -54,12 +56,12 @@ def refresh_all_user_stages():
             db.session.add(evidence)
         evidence.first_completed, evidence.first_pvp_completed, evidence.first_foundation_completed = anchors.get(user.id, (None, None, None))
         evidence.refreshed_at = now
-        rebuild_main_periods(user, evidence=evidence, membership=memberships.get(user.id))
+        rebuild_main_periods(user, evidence=evidence, membership=memberships.get(user.id), changes=changes.get(user.id, []))
     db.session.flush()
     return len(users)
 
 
-def rebuild_main_periods(user, evidence=None, membership=None):
+def rebuild_main_periods(user, evidence=None, membership=None, changes=None):
     if user.project is None or user.project.name != "CODING" or user.role.role_type.code not in ("lead", "employee"):
         return []
     if membership is None:
@@ -69,7 +71,10 @@ def rebuild_main_periods(user, evidence=None, membership=None):
     # Before the first refresh/new-user creation there is no observed chart.
     first = evidence.first_completed if evidence else None
     joined = user.join_date or (membership.joined_on if membership else None)
-    periods = main_periods(joined, first, user.last_working_day)
+    if changes is None:
+        from app.cohorts.stage_changes import stage_changes_by_user
+        changes = stage_changes_by_user([user.id], "main").get(user.id, [])
+    periods = main_periods(joined, first, user.last_working_day, changes=changes)
     UserStagePeriod.query.filter_by(user_id=user.id).delete(synchronize_session="fetch")
     rows = [UserStagePeriod(user_id=user.id, **p) for p in periods]
     db.session.add_all(rows)
@@ -84,20 +89,26 @@ def _rule_target(rules, code, day):
 def team_stage_overview(manager, page, page_size, cohort_id=None, lead_id=None, stage_code=None):
     if manager.project is None or manager.project.name != "CODING":
         return dict(items=[], page=page, page_size=page_size, total=0, total_pages=0)
-    query = coding_users_query().filter(User.id.in_(manager_team_user_ids(manager.id))).options(
+    query = coding_users_query().filter(
+        User.project_id == manager.project_id, User.id.in_(stage_reader_user_ids(manager))).options(
         joinedload(User.role).joinedload(Role.role_type), joinedload(User.reports_to))
     if lead_id == 0:
         query = query.filter(RoleType.code == "employee", User.reports_to_id.is_(None))
     elif lead_id is not None:
-        lead = query.filter(User.id == lead_id, RoleType.code == "lead", User.reports_to_id == manager.id).first()
+        lead_query = query.filter(User.id == lead_id, RoleType.code == "lead")
+        if manager.role.role_type.code == "manager":
+            lead_query = lead_query.filter(User.reports_to_id == manager.id)
+        lead = lead_query.first()
         if lead is None:
             abort(400, message="leadId must reference a lead in your team.")
         query = query.filter(db.or_(User.id == lead_id, User.reports_to_id == lead_id))
-    if cohort_id and db.session.get(Cohort, cohort_id) is None:
+    if manager.role.role_type.code == "manager" and cohort_id and db.session.get(Cohort, cohort_id) is None:
         abort(400, message="cohortId must reference an existing cohort.")
     users = query.order_by(User.first_name, User.last_name, User.id).all()
     ids = [u.id for u in users]
     memberships = {m.user_id: m for m in CohortMembership.query.options(joinedload(CohortMembership.cohort)).filter(CohortMembership.user_id.in_(ids))}
+    from app.cohorts.stage_changes import stage_changes_by_user
+    changes = stage_changes_by_user(ids)
     evidence = {e.user_id: e for e in UserStageEvidence.query.filter(UserStageEvidence.user_id.in_(ids))}
     by_user = {}
     for p in UserStagePeriod.query.filter(UserStagePeriod.user_id.in_(ids)).order_by(UserStagePeriod.start_date):
@@ -117,7 +128,8 @@ def team_stage_overview(manager, page, page_size, cohort_id=None, lead_id=None, 
         if (stage_code == "Unassigned" and code is not None) or (stage_code and stage_code != "Unassigned" and code != stage_code):
             continue
         foundation = foundation_progress(ev.first_pvp_completed if ev else None,
-                                         ev.first_foundation_completed if ev else None, day, user.last_working_day)
+                                         ev.first_foundation_completed if ev else None, day, user.last_working_day,
+                                         changes=[c for c in changes.get(user.id, []) if c.program == "foundation"])
         foundation["daily_target"] = _rule_target(foundation_rules, foundation["current_stage"], day)
         joined = user.join_date or (membership.joined_on if membership else None)
         issue = "First completion precedes joining date; review the source dates." if ev and ev.first_completed and joined and ev.first_completed < joined else None
@@ -128,7 +140,8 @@ def team_stage_overview(manager, page, page_size, cohort_id=None, lead_id=None, 
                           current_stage=code, daily_target=_rule_target(main_rules, code, day), lead=lead,
                           joined_on=joined, stage_as_of=day, periods=periods, foundation=foundation,
                           first_completed=ev.first_completed if ev else None,
-                          refreshed_at=ev.refreshed_at if ev else None, data_issue=issue))
+                          refreshed_at=ev.refreshed_at if ev else None, data_issue=issue,
+                          stage_changes=changes.get(user.id, [])))
     total = len(items)
     return dict(items=items[(page-1)*page_size:page*page_size], page=page, page_size=page_size,
                 total=total, total_pages=(total + page_size-1)//page_size)

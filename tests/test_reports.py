@@ -145,9 +145,22 @@ def test_resolve_dashboard_window_rejects_invalid_month():
 
 
 
+@pytest.fixture(autouse=True)
+def restore_report_joining_dates():
+    originals = {}
+    db.session.info["report_joining_dates"] = originals
+    yield
+    for user_id, joined_on in originals.items():
+        db.session.get(User, user_id).join_date = joined_on
+    db.session.commit()
+    db.session.info.pop("report_joining_dates", None)
+
+
 def _steady_state_kairon_history(user, uploaded_by_id):
-    # A completed chart four 30-day stages before the report window makes
-    # Steady State source-backed instead of relying on a manual override.
+    # Main progression follows joining duration, independently of Kairon.
+    # Restore this shared user's original date after the test.
+    db.session.info["report_joining_dates"].setdefault(user.id, user.join_date)
+    user.join_date = dt.date(2026, 1, 1)
     import_batch(dt.date(2026, 5, 1),
                  [_kairon_row(user, "Completed", completed_date=dt.date(2026, 5, 1),
                               created_date=dt.date(2026, 5, 1))], uploaded_by_id=uploaded_by_id)

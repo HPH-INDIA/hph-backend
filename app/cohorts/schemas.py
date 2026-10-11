@@ -184,6 +184,41 @@ class StagePeriodSchema(Schema):
     source = fields.String(dump_only=True)
 
 
+class UserStageChangeSchema(Schema):
+    id = fields.Integer(dump_only=True)
+    user_id = fields.Integer(dump_only=True, data_key="userId")
+    program = fields.String(dump_only=True)
+    stage_code = fields.String(dump_only=True, allow_none=True, data_key="stageCode")
+    effective_from = fields.Date(dump_only=True, data_key="effectiveFrom")
+    reason = fields.String(dump_only=True)
+    created_by_id = fields.Integer(dump_only=True, data_key="createdById")
+    created_by_name = fields.Method("actor_name", dump_only=True, data_key="createdByName")
+    created_at = fields.DateTime(dump_only=True, data_key="createdAt")
+    recalculated_records = fields.Integer(dump_only=True, data_key="recalculatedRecords")
+
+
+    def actor_name(self, change):
+        return f"{change.created_by.first_name} {change.created_by.last_name}".strip()
+
+
+class ChangeUserStageSchema(Schema):
+    program = fields.String(required=True, validate=validate.OneOf(["main", "foundation"]))
+    stage_code = fields.String(required=True, allow_none=True, data_key="stageCode")
+    effective_from = fields.Date(required=True, data_key="effectiveFrom")
+    reason = fields.String(required=True, validate=validate.Length(min=1, max=1000))
+
+    @validates_schema
+    def validate_stage(self, data, **kwargs):
+        stages = ["M1", "M2", "M3", "M4", "Steady State"] if data["program"] == "main" else ["W1", "W2", "W3", "W4", "Steady State"]
+        if data["stage_code"] is not None and data["stage_code"] not in stages:
+            raise ValidationError("Choose a stage from this program.", field_name="stageCode")
+        if not data["reason"].strip():
+            raise ValidationError("Enter a reason for the stage change.", field_name="reason")
+
+
+UserStageChangeEnvelopeSchema = envelope_schema("UserStageChangeEnvelopeSchema", fields.Nested(UserStageChangeSchema))
+
+
 class FoundationProgressSchema(Schema):
     eligibility = fields.String(dump_only=True)
     first_pvp_completed = fields.Date(dump_only=True, allow_none=True, data_key="firstPvpCompleted")
@@ -194,6 +229,7 @@ class FoundationProgressSchema(Schema):
 
 
 class TeamCoderOverviewItemSchema(Schema):
+    stage_changes = fields.List(fields.Nested(UserStageChangeSchema), dump_only=True, data_key="stageChanges")
     joined_on = fields.Date(dump_only=True, allow_none=True, data_key="joinedOn")
     stage_as_of = fields.Date(dump_only=True, data_key="stageAsOf")
     first_completed = fields.Date(dump_only=True, allow_none=True, data_key="firstCompleted")

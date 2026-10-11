@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.auth import require_feature, require_role
 from app.cohorts import bp
+from app.cohorts.access import require_stage_read_access
 from app.cohorts.models import Cohort, CohortJoinReview, Coder, CoderStagePeriod, Stage, StageException, StageTargetRule
 from app.cohorts.schemas import (
     CoderEnvelopeSchema,
@@ -15,6 +16,8 @@ from app.cohorts.schemas import (
     CoderStagePeriodListEnvelopeSchema,
     CodingUserSummaryListEnvelopeSchema,
     ChangeStageTargetSchema,
+    ChangeUserStageSchema,
+    UserStageChangeEnvelopeSchema,
     ChangeFoundationTargetSchema,
     CohortDetailEnvelopeSchema,
     CohortEnvelopeSchema,
@@ -59,8 +62,7 @@ OVERLAP_MESSAGE = "This date range overlaps an existing rule for this stage."
 
 @bp.route("/team/coders")
 class TeamCoderOverview(MethodView):
-    @require_feature("user_management")
-    @require_role("manager")
+    @require_stage_read_access
     @bp.arguments(TeamCoderOverviewQuerySchema, location="query")
     @bp.response(200, TeamCoderOverviewEnvelopeSchema)
     def get(self, args):
@@ -407,3 +409,15 @@ class FoundationTargetChange(MethodView):
         from app.cohorts.stage_refresh import change_foundation_target
         rule = change_foundation_target(g.user, **data)
         return {"status": 201, "message": "Foundation target changed successfully.", "data": rule}
+
+
+@bp.route("/team/users/<int:user_id>/stage-changes")
+class TeamUserStageChange(MethodView):
+    @require_feature("user_management")
+    @require_role("manager")
+    @bp.arguments(ChangeUserStageSchema)
+    @bp.response(201, UserStageChangeEnvelopeSchema)
+    def post(self, data, user_id):
+        from app.cohorts.stage_changes import change_user_stage
+        change = change_user_stage(g.user, user_id, **data)
+        return {"status": 201, "message": "User stage changed successfully.", "data": change}

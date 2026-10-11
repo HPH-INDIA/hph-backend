@@ -8,25 +8,20 @@ The Teams page opens on **Stages**. Each user has a main timeline and, when elig
 
 | Stage | Start | End |
 | --- | --- | --- |
-| Training | Joining date | Day before first completed Kairon chart |
-| M1 | First completed Kairon chart | Start + 29 days |
-| M2 | M1 start + 30 days | M1 start + 59 days |
-| M3 | M1 start + 60 days | M1 start + 89 days |
-| M4 | M1 start + 90 days | M1 start + 119 days |
-| Steady State | M1 start + 120 days | Open-ended |
+| Training | Joining date | Joining date + 13 days |
+| M1 | Joining date + 14 days | Joining date + 43 days |
+| M2 | Joining date + 44 days | Joining date + 73 days |
+| M3 | Joining date + 74 days | Joining date + 103 days |
+| M4 | Joining date + 104 days | Joining date + 133 days |
+| Steady State | Joining date + 134 days | Open-ended |
 
-Without a completion, Training has a known start and an unknown end. Production on the joining date produces no artificial, negative-length Training period. A completion before the joining date is flagged for source correction and does not start M1. Users without a cohort can still progress. Manual daily production no longer starts or shifts M1.
+Training always lasts 14 calendar days. Main progression depends only on the joining date, even when the user has no Kairon or manual charts. Earlier/later chart completions never change this schedule. Missing joining dates are explicit: no main timeline is fabricated. Users without a cohort can still progress.
 
-The Kairon calculation replaces stored manual stage shortcuts when imports finish. Saved manual-productivity snapshots remain unchanged by imports and reads. Manual resubmissions and explicitly confirmed target changes recalculate them using the stage and target effective on the record date.
+Kairon imports refresh evidence and rebuild the main cache using these calendar rules and manager restart history. Imports and reads preserve saved manual-productivity snapshots; submissions and confirmed target/stage changes recalculate them. The stage-rule rollout performs an explicit one-time recalculation of existing saved targets.
 
 ## Foundation eligibility and targets
 
-The clarified trigger is **completed_date**, not created/allocated date. Compare the earliest completed PVP and Foundation chart for each user:
-
-* PVP earlier than Foundation: Foundation weekly ramp begins on the first Foundation completion.
-* Foundation earlier than PVP, or Foundation present with no PVP: no weekly substages, including when PVP appears later.
-* Both first completions on the same date: order cannot be established from date-only evidence. Show this explicitly; do not assume eligibility.
-* No completed Foundation chart: awaiting first Foundation completion.
+The trigger remains **completed_date**, not created/allocated date. Every CODING lead and employee starts the Foundation ramp on their earliest completed Foundation chart. PVP-first, Foundation-first, no-PVP, and same-day first completions all use the same Foundation rules. Without a Foundation completion, the automatic Foundation timeline has not started.
 
 | Foundation stage | Inclusive elapsed days | Default charts/day |
 | --- | --- | --- |
@@ -36,9 +31,23 @@ The clarified trigger is **completed_date**, not created/allocated date. Compare
 | W4 | 21–27 | 30 |
 | Foundation Steady State | 28 onward | 30 |
 
-Weeks run for seven calendar days; activity gaps do not restart the ramp. Foundation Steady State never changes the main M stage. The main target applies to PVP; the Foundation weekly target applies to eligible Foundation work. They are combined using the actual completed chart mix as described below. Foundation-first users and date-only ties have no weekly target; the main-stage rate continues to apply.
+Weeks run for seven calendar days; activity gaps do not restart the ramp. Foundation Steady State never changes the main M stage. The main target applies to PVP; the Foundation weekly or Foundation Steady State target applies to Foundation work. They are combined using the actual completed chart mix as described below. Before the Foundation timeline starts, the existing main-rate fallback remains available.
 
-CODING managers configure targets using **Stage targets**, beside **Refresh stages** in Teams → Stages. There is no separate target tab. Cohort, lead and main-stage filters use the standard side drawer, with draft values, Apply, Reset and Cancel.
+CODING managers configure targets using **Stage targets**, beside **Refresh stages** in Teams → Stages. Stage targets opens a dedicated screen at `/team/stage-targets`. Cohort, lead and main-stage filters use the standard side drawer, with draft values, Apply, Reset and Cancel.
+
+## Manager stage restarts
+
+Managers with write access to `user_management` can use **Change stage** beside a user’s main or Foundation stage. The API is restricted to CODING managers and their own CODING leads/employees. A manager can select M1–M4 or main Steady State, W1–W4 or Foundation Steady State, or restore automatic progression.
+
+The selected stage starts afresh on the chosen effective date and then advances automatically. Main stages each last 30 calendar days; Foundation weeks each last 7 days. Starting M2 therefore reaches M3 after 30 days, M4 after 60 days, and main Steady State after 90 days. Starting W2 reaches W3 after 7 days, W4 after 14 days, and Foundation Steady State after 21 days. The other program continues independently.
+
+Effective date defaults to today in Asia/Kolkata, or the last working day for a former employee. Historical changes are allowed within employment, but cannot precede a later stage-change event for the same program. Dates before joining or first Foundation completion, dates after departure, and future dates are rejected. Foundation restarts require an observed first Foundation completion; an already-recorded manager restart survives a later import correction that removes that evidence.
+
+A reason and confirmation are required. Stage history before the effective date is retained. From that date onward, this user’s saved manual targets and adjusted CPD are recalculated using the effective Main/Foundation stages, target rule versions, recorded program counts, and time deductions. Chart counts, time entries, approval/rejection status, and other users are preserved. All changes commit atomically; failures roll back timeline, audit, and snapshots.
+
+Multiple restarts can revisit the same stage. Same-day corrections use the most recent event without overlapping periods. **Restore automatic progression** resumes the original joining-date or first-Foundation-completion schedule from the chosen date; it preserves earlier manager history. Kairon imports never delete restart events. `user_stage_changes` records actor, program, selected stage (null for restore), reason, effective date, timestamp, and recalculated record count. The Teams timeline shows repeated periods and the manager history.
+
+## Changing stage targets
 
 Every target edit opens a confirmation with no preselected scope:
 
@@ -85,6 +94,7 @@ Migrations:
 
 * `f469f0fdd1f2` after `d3f8b0e52147`: joining dates and stage evidence.
 * `04bba93362a2`: RLS-protected target-change audit.
+* `dd5f02f33536` after `aa10c0d4e201`: duration-based main cache backfill, RLS-protected manager restart history, and non-overlapping user-period ranges that allow repeated stages.
 * `44a1e2e48e73`: decimal daily-target snapshots and the two component target columns. Existing saved values are preserved; migration does not recalculate history.
 
 * Adds `users.join_date`.
@@ -94,11 +104,19 @@ Migrations:
 * Extends `GET /api/team/coders` with joining date, employment status, main periods, Foundation progression, and source dates.
 * Adds manager-only `GET /api/team/foundation-target-rules` and `POST /api/team/foundation-targets/change`.
 * Accepts and returns `join_date` on the existing user API.
+* Adds `POST /api/team/users/<user_id>/stage-changes` with `program`, `stageCode` (null restores automatic), `effectiveFrom`, and `reason`.
+* Returns `stageChanges` in the Teams overview.
 
 The live Supabase schema and the supplied 41 joining dates were updated separately on 8 October 2026. The data transaction matched case-insensitive emails, required exactly one match per address, and was restricted to those 41 users. Employee IDs were not changed. A before-state backup and the exact SQL were retained outside the repositories in the task workspace.
 
-Deploy the backend and frontend code together. Run `flask db upgrade` before starting the updated backend. The added audit and component columns must exist before target editing is enabled. On a different database, run the migration and a Kairon import to populate evidence; joining dates should be supplied through the user API rather than guessed from chart activity.
+Deploy the backend and frontend code together. Run `flask db upgrade` before starting the updated backend. The added audit and component columns must exist before target editing or manager stage changes are enabled. For the stage-rule rollout, run `flask refresh-user-stages --recalculate-targets` after migrating and before starting the updated backend. This command refreshes Kairon evidence and rebuilds all CODING timelines, then recalculates saved manual target snapshots in one transaction. Retain a before-state snapshot for rollout verification. On a different database, run the migration and a Kairon import to populate evidence; joining dates should be supplied through the user API rather than guessed from chart activity.
 
 ## Verification
 
-Tests cover calendar boundaries, same-day training, missing completions, Foundation-first exclusion, date-only ties, W4 to Foundation Steady State, departure clipping, corrections, reassignment, import retries and rollback, access controls, target history, and joining-date edits. The exact roster backfill was compared with the Python calculator for all 41 users in an isolated local database.
+Tests cover 14-day Training and all 30-day main boundaries independently of completions, Foundation-first/no-PVP/date-only ties with a uniform ramp, W4 to Foundation Steady State, manager restarts of every main/Foundation stage, repeated stages, restore automatic, departure clipping, corrections, reassignment, import retries and rollback, access controls, target history, joining-date edits, and atomic adjusted-target recalculation. The exact roster backfill was compared with the Python calculator for all 41 users in an isolated local database.
+
+## Read-only access for leads and coders
+
+The `stage_view` feature grants read-only Stages access to CODING lead and employee roles. Leads see themselves and employees reporting directly to them; coders see only themselves. The server intersects this scope with the viewer's CODING project before applying filters or pagination. Filters never expand this scope. Timelines, current main/Foundation targets, source dates and manager stage-change history are visible. Refresh stages only reloads the view.
+
+Managers retain their existing `user_management` permissions and team view. All stage, target, cohort and assignment writes still require the manager role and write permission; `stage_view` grants no administrative access. Read-only readers skip the manager-only cohort list and do not see editing controls or the Stage targets editor. New custom roles can be assigned View stages by an administrator.

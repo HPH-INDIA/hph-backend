@@ -59,13 +59,17 @@ def foundation_targets_for(records):
         return {}
     ids = {record.user_id for record in records}
     evidence = {row.user_id: row for row in UserStageEvidence.query.filter(UserStageEvidence.user_id.in_(ids))}
+    from app.cohorts.stage_changes import stage_changes_by_user
+    changes = stage_changes_by_user(ids, "foundation")
     departures = dict(db.session.query(User.id, User.last_working_day).filter(User.id.in_(ids)))
     rules = FoundationTargetRule.query.all()
     targets = {}
     for record in records:
         ev = evidence.get(record.user_id)
-        code = foundation_progress(ev.first_pvp_completed, ev.first_foundation_completed,
-                                   record.record_date, departures.get(record.user_id))["current_stage"] if ev else None
+        code = foundation_progress(ev.first_pvp_completed if ev else None,
+                                   ev.first_foundation_completed if ev else None,
+                                   record.record_date, departures.get(record.user_id),
+                                   changes=changes.get(record.user_id, []))["current_stage"]
         targets[record.id] = next((rule.daily_target for rule in rules
                                    if rule.stage_code == code and rule.effective_from <= record.record_date
                                    and (rule.effective_to is None or record.record_date < rule.effective_to)), None)

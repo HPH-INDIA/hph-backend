@@ -160,8 +160,10 @@ def test_imports_snapshot_after_stage_updates_and_preserve_unchanged_rows(
 ):
     if first_production:
         _membership(import_employee, superadmin)
-        # Production starts only after a completed Kairon chart, before the
-        # manual upload whose saved CPD this test exercises.
+        # The joining date places this user in M1 on the upload date,
+        # independent of the completed Kairon chart.
+        import_employee.join_date = DAY - dt.timedelta(days=14)
+        db.session.commit()
         from app.kairon.services import import_batch
         import_batch(DAY, [dict(program="PVP", level="1LR", status="Completed",
                                coding_analyst=f"{import_employee.first_name} {import_employee.last_name}",

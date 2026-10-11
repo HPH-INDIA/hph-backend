@@ -89,7 +89,12 @@ class UserStagePeriod(db.Model):
         db.CheckConstraint(
             f"source IN ({_sql_in_list(VALID_PERIOD_SOURCES)})", name="ck_user_stage_periods_source"
         ),
-        db.UniqueConstraint("user_id", "stage_code", name="uq_user_stage_periods_user_stage"),
+        db.CheckConstraint("end_date IS NULL OR end_date >= start_date", name="ck_user_stage_periods_range"),
+        ExcludeConstraint(
+            (db.column("user_id"), "="),
+            (text("daterange(start_date, end_date, '[]')"), "&&"),
+            using="gist", name="ex_user_stage_periods_no_overlap",
+        ),
     )
 
     id = db.Column(db.Integer, primary_key=True)
@@ -358,3 +363,26 @@ class StageTargetChange(db.Model):
     previous_rules = db.Column(db.JSON, nullable=False)
     recalculated_records = db.Column(db.Integer, nullable=False, default=0)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, server_default=db.func.now())
+
+
+class UserStageChange(db.Model):
+    """Dated manager restart/reset events; imports never delete this audit."""
+    __tablename__ = "user_stage_changes"
+    __table_args__ = (
+        db.CheckConstraint("program IN ('main','foundation')", name="ck_user_stage_change_program"),
+        db.CheckConstraint("stage_code IS NULL OR (program = 'main' AND stage_code IN ('M1','M2','M3','M4','Steady State')) OR (program = 'foundation' AND stage_code IN ('W1','W2','W3','W4','Steady State'))", name="ck_user_stage_change_stage"),
+        db.CheckConstraint("length(trim(reason)) > 0", name="ck_user_stage_change_reason"),
+        db.CheckConstraint("recalculated_records >= 0", name="ck_user_stage_change_records"),
+        db.Index("ix_user_stage_changes_timeline", "user_id", "program", "effective_from", "id"),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    program = db.Column(db.String(16), nullable=False)
+    stage_code = db.Column(db.String(32), nullable=True)  # null restores the automatic timeline
+    effective_from = db.Column(db.Date, nullable=False)
+    reason = db.Column(db.Text, nullable=False)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now(), nullable=False)
+    recalculated_records = db.Column(db.Integer, nullable=False, default=0)
+    user = db.relationship("User", foreign_keys=[user_id])
+    created_by = db.relationship("User", foreign_keys=[created_by_id])

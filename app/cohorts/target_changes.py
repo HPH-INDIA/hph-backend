@@ -38,12 +38,14 @@ def _affected_records(stage_code, effective_from, foundation):
             UserStagePeriod.start_date <= ManualDailyRecord.record_date,
             db.or_(UserStagePeriod.end_date.is_(None), UserStagePeriod.end_date >= ManualDailyRecord.record_date),
         )).order_by(ManualDailyRecord.id).all()
-    candidates = query.join(UserStageEvidence, UserStageEvidence.user_id == ManualDailyRecord.user_id).filter(
-        UserStageEvidence.first_pvp_completed < UserStageEvidence.first_foundation_completed,
-        ManualDailyRecord.record_date >= UserStageEvidence.first_foundation_completed,
-    ).add_entity(UserStageEvidence).order_by(ManualDailyRecord.id).all()
+    candidates = query.outerjoin(UserStageEvidence, UserStageEvidence.user_id == ManualDailyRecord.user_id
+                                 ).add_entity(UserStageEvidence).order_by(ManualDailyRecord.id).all()
+    from app.cohorts.stage_changes import stage_changes_by_user
+    changes = stage_changes_by_user({record.user_id for record, _ in candidates}, "foundation")
     return [record for record, evidence in candidates if foundation_progress(
-        evidence.first_pvp_completed, evidence.first_foundation_completed, record.record_date,
+        evidence.first_pvp_completed if evidence else None,
+        evidence.first_foundation_completed if evidence else None, record.record_date,
+        changes=changes.get(record.user_id, []),
     )["current_stage"] == stage_code]
 
 
