@@ -317,7 +317,10 @@ def _readable_user_ids(actor):
     if role_type in {"admin", "super_admin"}:
         return [row.id for row in User.query.all()]
     if role_type == "manager":
-        return [row.id for row in User.query.filter(User.project_id == actor.project_id).all()] if actor.project_id else [actor.id]
+        return [row.id for row in User.query.join(Role).join(RoleType).filter(
+            User.project_id == actor.project_id,
+            RoleType.code.in_(("lead", "employee")),
+        ).all()] if actor.project_id else []
     if role_type == "lead":
         direct_report_ids = [
             user.id
@@ -329,12 +332,7 @@ def _readable_user_ids(actor):
         ]
         return [actor.id, *direct_report_ids]
     if role_type == "employee":
-        if actor.reports_to_id is None or actor.project_id is None:
-            return [actor.id]
-        return [row.id for row in User.query.filter(
-            User.project_id == actor.project_id,
-            db.or_(User.id == actor.id, User.id == actor.reports_to_id, User.reports_to_id == actor.reports_to_id),
-        ).all()]
+        return [actor.id]
     return []
 
 

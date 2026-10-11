@@ -234,6 +234,13 @@ def test_lead_and_employee_record_access_is_limited_to_their_reporting_scope(api
     )
     db.session.commit()
 
+    status, body = api_client.get("/api/login-hours/records")
+    assert status == 200, body
+    assert {item["userId"] for item in body["data"]["items"]} == {lead.id, team_member.id, outside_member.id}
+    manager_options = {option["id"] for option in body["data"]["filterOptions"]["users"]}
+    assert {lead.id, team_member.id, outside_member.id}.issubset(manager_options)
+    assert manager_user.id not in manager_options
+
     status, body = api_client.get(f"/api/login-hours/records?leadId={lead.id}")
     assert status == 200, body
     assert {item["userId"] for item in body["data"]["items"]} == {lead.id, team_member.id}
@@ -254,17 +261,22 @@ def test_lead_and_employee_record_access_is_limited_to_their_reporting_scope(api
     api_client.login(team_member.email, "test-password")
     status, body = api_client.get("/api/login-hours/records")
     assert status == 200, body
-    assert {item["userId"] for item in body["data"]["items"]} == {lead.id, team_member.id}
+    assert {item["userId"] for item in body["data"]["items"]} == {team_member.id}
+    assert {option["id"] for option in body["data"]["filterOptions"]["users"]} == {team_member.id}
+    assert body["data"]["filterOptions"]["leads"] == []
 
-    status, body = api_client.get(f"/api/login-hours/records?userIds={lead.id}&userIds={team_member.id}&from=2026-09-17&to=2026-09-17")
+    status, body = api_client.get(f"/api/login-hours/records?userIds={team_member.id}&from=2026-09-17&to=2026-09-17")
     assert status == 200, body
-    assert body["data"]["total"] == 2
+    assert body["data"]["total"] == 1
+
+    status, body = api_client.get(f"/api/login-hours/records?userIds={lead.id}&userIds={team_member.id}")
+    assert status == 403, body
 
     status, body = api_client.get("/api/login-hours/records?from=2026-09-18&to=2026-09-17")
     assert status == 400, body
 
     status, body = api_client.get(f"/api/login-hours/records?userId={lead.id}")
-    assert status == 200, body
+    assert status == 403, body
 
     status, body = api_client.get(f"/api/login-hours/records?userIds={lead.id}&userIds={outside_member.id}")
     assert status == 403, body
