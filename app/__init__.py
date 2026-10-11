@@ -60,6 +60,7 @@ def create_app():
     from app.manual_daily_records import models as manual_daily_records_models  # noqa: F401
     from app.login_hours import models as login_hours_models  # noqa: F401
     from app.reports import models as reports_models  # noqa: F401
+    from app.lead_coverage import models as lead_coverage_models  # noqa: F401
 
     from app.storage_imports import models as storage_import_models  # noqa: F401
 
@@ -86,6 +87,8 @@ def create_app():
     api.register_blueprint(manual_daily_records_bp)
     api.register_blueprint(reports_bp)
     api.register_blueprint(login_hours_bp)
+    from app.lead_coverage import bp as lead_coverage_bp
+    api.register_blueprint(lead_coverage_bp)
     from app.storage_imports import bp as storage_imports_bp
     api.register_blueprint(storage_imports_bp)
 

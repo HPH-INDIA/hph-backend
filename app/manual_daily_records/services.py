@@ -19,7 +19,7 @@ from app.manual_daily_records.models import (
     ManualImportChunk,
 )
 from app.manual_daily_records.productivity import snapshot_manual_productivity
-from app.users.hierarchy import lead_employee_user_ids, manager_team_user_ids
+from app.users.hierarchy import manager_team_user_ids, report_team_user_ids
 from app.users.models import User
 
 MANUAL_UPLOAD_HEADERS = (
@@ -53,10 +53,10 @@ _ENTRY_FIELDS = (
 
 
 def manual_review_user_ids(reviewer):
-    """Only a lead's direct employee reports are eligible for their review."""
+    """Review own and currently covered employees, never another lead's records."""
     if reviewer is None or reviewer.role.role_type.code != "lead":
         return []
-    return lead_employee_user_ids(reviewer.id)
+    return report_team_user_ids(reviewer, include_leads=False)
 
 
 def scope_manual_records(query, viewer):
@@ -64,7 +64,7 @@ def scope_manual_records(query, viewer):
     if role_type == "employee":
         return query.filter(ManualDailyRecord.user_id == viewer.id)
     if role_type == "lead":
-        user_ids = [viewer.id, *lead_employee_user_ids(viewer.id)]
+        user_ids = report_team_user_ids(viewer)
         return query.filter(ManualDailyRecord.user_id.in_(user_ids))
     if role_type == "manager":
         user_ids = [viewer.id, *manager_team_user_ids(viewer.id)]

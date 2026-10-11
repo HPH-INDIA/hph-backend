@@ -5,7 +5,7 @@ from flask import g
 from flask_smorest import abort
 
 from app.auth import has_feature
-from app.users.hierarchy import lead_employee_user_ids, manager_team_user_ids
+from app.users.hierarchy import manager_team_user_ids, report_team_user_ids
 
 
 def require_stage_read_access(view):
@@ -29,7 +29,7 @@ def stage_reader_user_ids(user):
     if role == "manager":
         return manager_team_user_ids(user.id)
     if role == "lead":
-        return [user.id, *lead_employee_user_ids(user.id)]
+        return report_team_user_ids(user)
     if role == "employee":
         return [user.id]
     return []

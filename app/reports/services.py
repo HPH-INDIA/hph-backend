@@ -21,7 +21,10 @@ from app.manual_daily_records.services import approve_record, manual_review_user
 from app.reports.models import OfficeHoliday
 from app.roles.models import Role, RoleType
 from app.users.models import Project, User
-from app.users.hierarchy import lead_employee_user_ids, manager_team_user_ids
+from app.users.hierarchy import (
+    lead_employee_user_ids, manager_team_user_ids, report_lead_ids,
+    report_team_options, report_team_user_ids, resolve_report_lead,
+)
 
 
 FULL_WORKDAY_MINUTES = 8 * 60
@@ -659,8 +662,10 @@ def _kairon_user_summaries(user_ids, from_date, to_date):
     return summaries
 
 
-def get_kairon_lead_team_range(lead, from_date, to_date):
+def get_kairon_lead_team_range(lead, from_date, to_date, lead_id=None):
     """Completed production and current holds for a lead and direct coders."""
+    viewer = lead
+    lead = resolve_report_lead(viewer, lead_id)
     coder_ids = lead_employee_user_ids(lead.id)
     coders = (
         User.query.filter(User.id.in_(coder_ids))
@@ -715,6 +720,8 @@ def get_kairon_lead_team_range(lead, from_date, to_date):
         "from_date": from_date,
         "to_date": to_date,
         "lead": lead,
+        "selected_lead_id": lead.id,
+        "team_options": report_team_options(viewer),
         "lead_days": days_for(lead.id),
         "lead_summary": summary_for(lead.id),
         "coders": coder_entries,
@@ -764,8 +771,9 @@ def get_kairon_manager_team_range(manager, from_date, to_date):
 def get_manual_team_range(viewer, from_date, to_date):
     """Daily records in an inclusive range, grouped without duplicating leads."""
     if viewer.role.role_type.code == "lead":
-        leads = [viewer]
-        member_ids = [viewer.id, *lead_employee_user_ids(viewer.id)]
+        lead_ids = report_lead_ids(viewer)
+        leads = User.query.filter(User.id.in_(lead_ids)).order_by(User.first_name, User.last_name, User.id).all()
+        member_ids = report_team_user_ids(viewer)
     else:
         member_ids = manager_team_user_ids(viewer.id)
         leads = (

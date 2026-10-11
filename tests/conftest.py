@@ -35,6 +35,7 @@ from app.users.models import Project, User
 # seed migrations (via migrate_upgrade() below) and are never touched by a
 # test, so they're set up once per session rather than per test.
 _COHORT_MODULE_TABLES_FK_ORDER = (
+    "lead_coverages",
     "storage_import_slots",
     "storage_imports",
     "login_hour_records",

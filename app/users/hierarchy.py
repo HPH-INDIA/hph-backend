@@ -30,6 +30,49 @@ def lead_employee_user_ids(lead_id):
     ]
 
 
+def report_lead_ids(viewer):
+    """Lead teams currently visible for reports; never alter the org hierarchy."""
+    from app.lead_coverage.services import active_covered_lead_ids
+
+    return list(dict.fromkeys([viewer.id, *active_covered_lead_ids(viewer)]))
+
+
+def report_team_user_ids(viewer, *, include_leads=True, lead_id=None):
+    """Current report/review scope, independent of the requested data period."""
+    from app.roles.models import Role, RoleType
+    from app.users.models import User
+
+    lead_ids = report_lead_ids(viewer)
+    if lead_id is not None:
+        resolve_report_lead(viewer, lead_id)
+        lead_ids = [lead_id]
+    employee_ids = [user.id for user in User.query.join(Role).join(RoleType).filter(
+        User.reports_to_id.in_(lead_ids), RoleType.code == "employee",
+    )]
+    return list(dict.fromkeys([*(lead_ids if include_leads else []), *employee_ids]))
+
+
+def resolve_report_lead(viewer, lead_id=None):
+    """Validate a source team on every read, including dashboard drilldowns."""
+    from flask_smorest import abort
+    from app.extensions import db
+    from app.users.models import User
+
+    selected_id = viewer.id if lead_id is None else lead_id
+    if selected_id not in report_lead_ids(viewer):
+        abort(404, message="Lead team not found or coverage is no longer active.")
+    return db.session.get(User, selected_id)
+
+
+def report_team_options(viewer):
+    from app.users.models import User
+
+    ids = report_lead_ids(viewer)
+    members = {user.id: user for user in User.query.filter(User.id.in_(ids))}
+    return [{"lead_id": lead_id, "name": f"{members[lead_id].first_name} {members[lead_id].last_name}".strip()}
+            for lead_id in ids if lead_id in members]
+
+
 def manager_team_user_ids(manager_id):
     """Return a manager's leads and employees.
 

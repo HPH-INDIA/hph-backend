@@ -8,6 +8,7 @@ from app.extensions import db
 from app.reports.services import _cpd, _percent, get_efficiency, get_period_goal
 from app.roles.models import Role, RoleType
 from app.users.models import User
+from app.users.hierarchy import resolve_report_lead, report_team_options
 
 
 def _sum_known(rows, key):
@@ -80,8 +81,10 @@ def _goal_for_users(goal, user_ids, scope):
     return result
 
 
-def get_lead_dashboard(lead, from_date, to_date, coder_id=None, goal_to_date=None):
-    # Role + direct reporting line are enforced here, not trusted from the UI.
+def get_lead_dashboard(lead, from_date, to_date, coder_id=None, goal_to_date=None, lead_id=None):
+    viewer = lead
+    lead = resolve_report_lead(viewer, lead_id)
+    # Resolve current coverage first; the reporting window cannot grant access.
     coders = User.query.join(Role).join(RoleType).filter(
         User.reports_to_id == lead.id,
         User.id != lead.id,
@@ -99,6 +102,8 @@ def get_lead_dashboard(lead, from_date, to_date, coder_id=None, goal_to_date=Non
         "from_date": from_date,
         "to_date": to_date,
         "selected_coder_id": coder_id,
+        "selected_lead_id": lead.id,
+        "team_options": report_team_options(viewer),
         "coder_options": [{"user_id": coder.id, "name": f"{coder.first_name} {coder.last_name}".strip(), "is_active": coder.is_active} for coder in coders],
         "qa": {"goal": _goal_for_users(goals, {lead.id}, "self"), "efficiency": efficiency[lead.id]},
         "coders": {

@@ -5,6 +5,7 @@ from flask.views import MethodView
 from app.auth import require_feature, require_role
 from app.extensions import db
 from app.kairon import bp
+from app.users.hierarchy import report_team_user_ids
 from app.kairon.models import KaironChartRecord, KaironUploadBatch
 from app.kairon.schemas import (
     KaironChartQuerySchema,
@@ -126,6 +127,14 @@ class KaironCharts(MethodView):
         query = KaironChartRecord.query.join(KaironUploadBatch).filter(
             KaironUploadBatch.superseded_at.is_(None)
         )
+        # Employee/lead chart reads obey report scope, including current coverage.
+        # Managers retain the existing global import-inspection view here; their
+        # team report endpoints continue enforcing their own reporting tree.
+        role_type = g.user.role.role_type.code
+        if role_type == "employee":
+            query = query.filter(KaironChartRecord.user_id == g.user.id)
+        elif role_type == "lead":
+            query = query.filter(KaironChartRecord.user_id.in_(report_team_user_ids(g.user)))
         if args.get("status"):
             query = query.filter(KaironChartRecord.status == args["status"])
         if args.get("level"):

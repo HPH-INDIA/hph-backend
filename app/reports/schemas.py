@@ -115,7 +115,11 @@ class ManualTeamRangeQuerySchema(Schema):
             raise ValidationError("To date must be on or after from date.", field_name="toDate")
 
 
-class KaironTeamRecordQuerySchema(PaginationQuerySchema, ManualTeamRangeQuerySchema):
+class LeadTeamRangeQuerySchema(ManualTeamRangeQuerySchema):
+    lead_id = fields.Integer(load_default=None, data_key="leadId", validate=validate.Range(min=1))
+
+
+class KaironTeamRecordQuerySchema(PaginationQuerySchema, LeadTeamRangeQuerySchema):
     user_id = fields.Integer(required=True, validate=validate.Range(min=1), data_key="userId")
 
 
@@ -133,6 +137,11 @@ class KaironChartSummarySchema(Schema):
     total = fields.Integer(dump_only=True)
 
 
+class ReportTeamOptionSchema(Schema):
+    lead_id = fields.Integer(dump_only=True, data_key="leadId")
+    name = fields.String(dump_only=True)
+
+
 class KaironTeamCoderSchema(Schema):
     user = fields.Nested(ManualTeamMemberSchema, dump_only=True)
     days = fields.List(fields.Nested(KaironCompletedDailyCountSchema), dump_only=True)
@@ -147,6 +156,8 @@ class KaironLeadTeamRangeSchema(Schema):
     lead_days = fields.List(fields.Nested(KaironCompletedDailyCountSchema), dump_only=True, data_key="leadDays")
     lead_summary = fields.Nested(KaironChartSummarySchema, dump_only=True, data_key="leadSummary")
     coders = fields.List(fields.Nested(KaironTeamCoderSchema), dump_only=True)
+    selected_lead_id = fields.Integer(dump_only=True, data_key="selectedLeadId")
+    team_options = fields.List(fields.Nested(ReportTeamOptionSchema), dump_only=True, data_key="teamOptions")
 
 
 KaironLeadTeamRangeEnvelopeSchema = envelope_schema(
@@ -280,6 +291,7 @@ class EfficiencyQuerySchema(Schema):
 
 class LeadDashboardQuerySchema(EfficiencyQuerySchema):
     coder_id = fields.Integer(required=False, load_default=None, data_key="coderId", validate=validate.Range(min=1))
+    lead_id = fields.Integer(load_default=None, data_key="leadId", validate=validate.Range(min=1))
 
 
 class MonthlyGoalQuerySchema(Schema):
@@ -425,6 +437,8 @@ class LeadDashboardSchema(Schema):
     from_date = fields.Date(dump_only=True, data_key="from")
     to_date = fields.Date(dump_only=True, data_key="to")
     selected_coder_id = fields.Integer(dump_only=True, allow_none=True, data_key="selectedCoderId")
+    selected_lead_id = fields.Integer(dump_only=True, data_key="selectedLeadId")
+    team_options = fields.List(fields.Nested(ReportTeamOptionSchema), dump_only=True, data_key="teamOptions")
     coder_options = fields.List(fields.Nested(LeadCoderOptionSchema), dump_only=True, data_key="coderOptions")
     qa = fields.Nested(LeadPerformanceSectionSchema, dump_only=True)
     coders = fields.Nested(LeadPerformanceSectionSchema, dump_only=True)

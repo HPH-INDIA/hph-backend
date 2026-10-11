@@ -36,6 +36,7 @@ from app.reports.schemas import (
     ManualTeamRangeQuerySchema,
     LeadDashboardEnvelopeSchema,
     LeadDashboardQuerySchema,
+    LeadTeamRangeQuerySchema,
     ManagerDashboardQuerySchema,
     ManagerDashboardEnvelopeSchema,
     MonthlyGoalEnvelopeSchema,
@@ -61,7 +62,9 @@ from app.reports.services import (
     resolve_dashboard_window,
     get_monthly_goal,
 )
-from app.users.hierarchy import lead_employee_user_ids, manager_lead_team_user_ids, manager_team_user_ids
+from app.users.hierarchy import (
+    manager_lead_team_user_ids, manager_team_user_ids, report_team_user_ids,
+)
 from app.users.models import User
 
 # One feature controls both Kairon and Manual report visibility. Write access
@@ -190,13 +193,13 @@ class ReportsKaironCompletedRecords(MethodView):
 class ReportsKaironTeamRange(MethodView):
     @require_feature(REPORTS_FEATURE)
     @require_role("lead")
-    @bp.arguments(ManualTeamRangeQuerySchema, location="query")
+    @bp.arguments(LeadTeamRangeQuerySchema, location="query")
     @bp.response(200, KaironLeadTeamRangeEnvelopeSchema)
     def get(self, args):
         return {
             "status": 200,
             "message": "Kairon lead and coder production retrieved successfully.",
-            "data": get_kairon_lead_team_range(g.user, args["from_date"], args["to_date"]),
+            "data": get_kairon_lead_team_range(g.user, args["from_date"], args["to_date"], args.get("lead_id")),
         }
 
 
@@ -221,7 +224,7 @@ class ReportsKaironTeamHolds(MethodView):
     @bp.arguments(PaginationQuerySchema, location="query")
     @bp.response(200, KaironRecordPageEnvelopeSchema)
     def get(self, args):
-        team_ids = [g.user.id, *lead_employee_user_ids(g.user.id)]
+        team_ids = report_team_user_ids(g.user)
         query = (
             KaironChartRecord.query.join(KaironUploadBatch)
             .filter(
@@ -247,8 +250,12 @@ class ReportsKaironTeamRecords(MethodView):
     def get(self, args):
         if g.user.role.role_type.code == "manager":
             member_ids = manager_team_user_ids(g.user.id)
+            if args.get("lead_id") is not None:
+                member_ids = manager_lead_team_user_ids(g.user.id, args["lead_id"])
+                if member_ids is None:
+                    abort(404, message="Team member not found.")
         else:
-            member_ids = [g.user.id, *lead_employee_user_ids(g.user.id)]
+            member_ids = report_team_user_ids(g.user, lead_id=args.get("lead_id"))
         if args["user_id"] not in member_ids:
             abort(404, message="Team member not found.")
         query = (
@@ -360,8 +367,9 @@ class ReportsManualReviews(MethodView):
                 query = query.filter(ManualDailyRecord.user_id.in_(lead_team_ids))
         else:
             query = query.filter(ManualDailyRecord.user_id.in_(manual_review_user_ids(g.user)))
-            if args.get("lead_id") is not None and args["lead_id"] != g.user.id:
-                abort(400, message="leadId must reference your own team.")
+            if args.get("lead_id") is not None:
+                team_ids = report_team_user_ids(g.user, include_leads=False, lead_id=args["lead_id"])
+                query = query.filter(ManualDailyRecord.user_id.in_(team_ids))
         if args.get("from_date"):
             query = query.filter(ManualDailyRecord.record_date >= args["from_date"])
         if args.get("to_date"):
@@ -488,7 +496,8 @@ class LeadDashboard(MethodView):
         goal_to_date = to_date
         if not any(args.get(key) for key in ("from_date", "to_date", "date", "year")):
             _, goal_to_date = _month_window(args.get("month"))
-        result = get_lead_dashboard(g.user, from_date, to_date, args.get("coder_id"), goal_to_date)
+        result = get_lead_dashboard(g.user, from_date, to_date, args.get("coder_id"), goal_to_date,
+                                    lead_id=args.get("lead_id"))
         return {"status": 200, "message": "QA and coder performance retrieved successfully.", "data": result}
 
 

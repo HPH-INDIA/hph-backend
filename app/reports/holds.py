@@ -6,7 +6,7 @@ from sqlalchemy.orm import joinedload
 from app.extensions import db
 from app.kairon.models import KaironChartRecord, KaironUploadBatch
 from app.roles.models import Role
-from app.users.hierarchy import lead_employee_user_ids, manager_team_user_ids
+from app.users.hierarchy import manager_team_user_ids, report_team_user_ids
 from app.users.models import User
 
 
@@ -51,7 +51,7 @@ def hold_members(viewer):
     if role == "employee":
         ids = [viewer.id]
     elif role == "lead":
-        ids = [viewer.id, *lead_employee_user_ids(viewer.id)]
+        ids = report_team_user_ids(viewer)
     elif role == "manager":
         ids = manager_team_user_ids(viewer.id)
     else:
