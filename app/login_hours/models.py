@@ -13,6 +13,12 @@ class LoginHoursUploadBatch(db.Model):
     matched_count = db.Column(db.Integer, nullable=False, default=0)
     unmatched_count = db.Column(db.Integer, nullable=False, default=0)
 
+    # Per-upload facts remain immutable once complete, even when later chunks
+    # overwrite the shared user/date record table.
+    completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    attendance_dates = db.Column(db.JSON, nullable=False, default=list, server_default='[]')
+    punch_user_ids_by_date = db.Column(db.JSON, nullable=False, default=dict, server_default='{}')
+
     upload_token = db.Column(db.String(36), nullable=True)
     chunk_hashes = db.Column(db.JSON, nullable=True)
     unmatched_names = db.Column(db.JSON, nullable=True)

@@ -13,6 +13,7 @@ class LoginHoursRecordChunkSchema(Schema):
     source_format = fields.String(required=True, validate=validate.Length(min=1, max=64), data_key="sourceFormat")
     upload_id = fields.UUID(required=True, data_key="uploadId")
     batch_id = fields.Integer(load_default=None, allow_none=True, validate=validate.Range(min=1), data_key="batchId")
+    is_final_chunk = fields.Boolean(load_default=False, data_key="isFinalChunk")
     chunk_index = fields.Integer(required=True, validate=validate.Range(min=0), data_key="chunkIndex")
     headers = fields.List(fields.String(allow_none=True), required=True, validate=validate.Length(min=1, max=100))
     rows = fields.List(fields.List(fields.Raw(allow_none=True), validate=validate.Length(max=100)), required=True, validate=validate.Length(min=1, max=200))
@@ -24,6 +25,7 @@ class LoginHoursUploadBatchSchema(Schema):
     source_format = fields.String(dump_only=True, data_key="sourceFormat")
     uploaded_by_id = fields.Integer(dump_only=True, data_key="uploadedById")
     uploaded_at = fields.DateTime(dump_only=True, data_key="uploadedAt")
+    completed_at = fields.DateTime(dump_only=True, allow_none=True, data_key="completedAt")
     row_count = fields.Integer(dump_only=True, data_key="rowCount")
     matched_count = fields.Integer(dump_only=True, data_key="matchedCount")
     unmatched_count = fields.Integer(dump_only=True, data_key="unmatchedCount")
@@ -89,3 +91,25 @@ LoginHoursUploadBatchListEnvelopeSchema = envelope_schema(
 LoginHourRecordPageEnvelopeSchema = envelope_schema(
     "LoginHourRecordPageEnvelopeSchema", fields.Nested(LoginHourRecordPageSchema)
 )
+
+
+class MissingPunchUserSchema(Schema):
+    id = fields.Integer(dump_only=True)
+    first_name = fields.String(dump_only=True, data_key="firstName")
+    last_name = fields.String(dump_only=True, data_key="lastName")
+    emp_id = fields.String(dump_only=True, data_key="empId")
+    role_type = fields.String(dump_only=True, data_key="roleType")
+
+
+class TodayPunchReportSchema(Schema):
+    date = fields.Date(dump_only=True)
+    available = fields.Boolean(dump_only=True)
+    uploaded_at = fields.DateTime(dump_only=True, allow_none=True, data_key="uploadedAt")
+    source_filename = fields.String(dump_only=True, allow_none=True, data_key="sourceFilename")
+    total_users = fields.Integer(dump_only=True, data_key="totalUsers")
+    punched_users = fields.Integer(dump_only=True, data_key="punchedUsers")
+    unmatched_count = fields.Integer(dump_only=True, data_key="unmatchedCount")
+    missing_users = fields.List(fields.Nested(MissingPunchUserSchema), dump_only=True, data_key="missingUsers")
+
+
+TodayPunchReportEnvelopeSchema = envelope_schema("TodayPunchReportEnvelopeSchema", fields.Nested(TodayPunchReportSchema))

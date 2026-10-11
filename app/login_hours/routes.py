@@ -1,7 +1,7 @@
 from flask import g
 from flask.views import MethodView
 
-from app.auth import require_feature
+from app.auth import require_feature, require_role
 from app.login_hours import bp
 from app.login_hours.models import LoginHoursUploadBatch
 from app.login_hours.schemas import (
@@ -11,6 +11,7 @@ from app.login_hours.schemas import (
     LoginHoursUploadBatchListEnvelopeSchema,
     LoginHoursUploadRequestSchema,
     LoginHoursRecordChunkSchema,
+    TodayPunchReportEnvelopeSchema,
 )
 from app.login_hours.services import import_login_hours, import_login_hour_chunk, list_login_hour_records
 
@@ -63,3 +64,13 @@ class LoginHoursRecordChunks(MethodView):
     def post(self, data):
         batch = import_login_hour_chunk(data, g.user.id)
         return {"status": 201, "message": "Attendance records saved successfully.", "data": batch}
+
+
+@bp.route("/login-hours/today-punches")
+class TodayPunchReport(MethodView):
+    @require_feature("login_hours", access="read")
+    @require_role("manager")
+    @bp.response(200, TodayPunchReportEnvelopeSchema)
+    def get(self):
+        from app.login_hours.daily_punches import today_punch_report
+        return {"status": 200, "message": "Today's punch report retrieved successfully.", "data": today_punch_report(g.user)}

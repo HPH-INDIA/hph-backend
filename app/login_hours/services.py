@@ -1,7 +1,7 @@
 import base64
 import binascii
 import re
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from io import BytesIO
 
 from flask_smorest import abort
@@ -160,7 +160,8 @@ def import_login_hours(file_base64, source_filename, uploaded_by_id):
 
     sheet, header_row, headers, source_format = _find_table(workbook)
     try:
-        parsed_rows, unmatched_row_count, unmatched_names = _parse_rows(sheet.iter_rows(min_row=header_row + 1, values_only=True), headers)
+        day_summary = {}
+        parsed_rows, unmatched_row_count, unmatched_names = _parse_rows(sheet.iter_rows(min_row=header_row + 1, values_only=True), headers, day_summary)
     finally:
         workbook.close()
     batch = LoginHoursUploadBatch(source_filename=source_filename, source_format=source_format,
@@ -168,13 +169,15 @@ def import_login_hours(file_base64, source_filename, uploaded_by_id):
         matched_count=len(parsed_rows), unmatched_count=unmatched_row_count)
     db.session.add(batch)
     db.session.flush()
+    _merge_punch_summary(batch, day_summary)
+    batch.completed_at = datetime.now(timezone.utc)
     _upsert_rows(parsed_rows, batch.id)
     batch.unmatched_names = unmatched_names
     db.session.commit()
     return batch
 
 
-def _parse_rows(rows, headers):
+def _parse_rows(rows, headers, day_summary=None):
     users_by_name = _coding_users_by_name()
     parsed_by_key = {}
     unmatched_names = set()
@@ -193,14 +196,22 @@ def _parse_rows(rows, headers):
         if department and _normalize(department) != "coding":
             continue
 
+        day = attendance_date.isoformat()
+        if day_summary is not None:
+            day_summary.setdefault(day, {})
         normalized_name = _normalize(employee_name)
-        normalized_name = ATTENDANCE_NAME_ALIASES.get(normalized_name, normalized_name)
+        # A known database name wins over a legacy spelling alias.
         user = users_by_name.get(normalized_name)
+        if user is None:
+            user = users_by_name.get(ATTENDANCE_NAME_ALIASES.get(normalized_name, normalized_name))
         if user is None:
             unmatched_names.add(employee_name)
             unmatched_row_count += 1
             continue
 
+        if day_summary is not None:
+            day_summary[day][user.id] = (_parse_time(value(row, "firstin")) is not None
+                                         or _integer(value(row, "entries")) > 0)
         parsed_by_key[(user.id, attendance_date)] = {
                 "user": user,
                 "attendance_date": attendance_date,
@@ -219,6 +230,21 @@ def _parse_rows(rows, headers):
             }
 
     return list(parsed_by_key.values()), unmatched_row_count, sorted(unmatched_names)
+
+
+def _merge_punch_summary(batch, day_summary):
+    days = set(batch.attendance_dates or []) | set(day_summary)
+    punched = dict(batch.punch_user_ids_by_date or {})
+    for day, observations in day_summary.items():
+        ids = set(punched.get(day, []))
+        for user_id, has_punch in observations.items():
+            if has_punch:
+                ids.add(user_id)
+            else:
+                ids.discard(user_id)
+        punched[day] = sorted(ids)
+    batch.attendance_dates = sorted(days)
+    batch.punch_user_ids_by_date = punched
 
 
 def _upsert_rows(rows, batch_id):
@@ -261,17 +287,27 @@ def import_login_hour_chunk(data, uploaded_by_id):
     if index < len(hashes):
         if hashes[index] != digest:
             abort(409, message="This chunk was already saved with different records.")
+        if data.get("is_final_chunk") and batch.completed_at is None:
+            if index != len(hashes) - 1:
+                abort(409, message="Only the last saved chunk can complete this upload.")
+            batch.completed_at = datetime.now(timezone.utc)
         db.session.commit()
         return batch
+    if batch.completed_at is not None:
+        abort(409, message="This attendance upload is already complete.")
     if index != len(hashes):
         abort(409, message="Upload chunks in order.")
-    rows, unmatched_count, names = _parse_rows(data["rows"], headers)
+    day_summary = {}
+    rows, unmatched_count, names = _parse_rows(data["rows"], headers, day_summary)
+    _merge_punch_summary(batch, day_summary)
     _upsert_rows(rows, batch.id)
     batch.row_count += len(rows) + unmatched_count
     batch.matched_count += len(rows)
     batch.unmatched_count += unmatched_count
     batch.unmatched_names = sorted(set(batch.unmatched_names or []) | set(names))
     batch.chunk_hashes = [*hashes, digest]
+    if data.get("is_final_chunk"):
+        batch.completed_at = datetime.now(timezone.utc)
     db.session.commit()
     return batch
 
