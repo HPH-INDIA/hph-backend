@@ -244,3 +244,6 @@ logs/
 # Dedicated Docker test environment
 .env.test
 !.env.test.example
+
+# Production templates contain placeholders only
+!.env.production.example
