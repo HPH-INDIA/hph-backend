@@ -3,7 +3,7 @@ from marshmallow import Schema, ValidationError, fields, post_dump, validate, va
 from app.extensions import db
 from app.features.models import Feature
 from app.responses import envelope_schema
-from app.roles.models import RoleType, role_features
+from app.roles.models import RoleType
 
 
 class RoleFeaturePermissionSchema(Schema):
@@ -60,24 +60,10 @@ class RoleSchema(Schema):
 
     @post_dump(pass_original=True)
     def add_feature_ids(self, data, original, **kwargs):
-        data["features"] = [feature.id for feature in original.features]
-        rows = db.session.execute(
-            db.select(
-                role_features.c.feature_id,
-                role_features.c.can_read,
-                role_features.c.can_write,
-            )
-            .where(role_features.c.role_id == original.id)
-            .order_by(role_features.c.feature_id)
-        ).all()
-        data["feature_permissions"] = [
-            {
-                "feature_id": row.feature_id,
-                "can_read": row.can_read,
-                "can_write": row.can_write,
-            }
-            for row in rows
-        ]
+        from app.roles.permissions import canonical_permissions
+        permissions = canonical_permissions(original)
+        data["features"] = [permission["feature_id"] for permission in permissions]
+        data["feature_permissions"] = permissions
         return data
 
 

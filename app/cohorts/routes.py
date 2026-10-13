@@ -79,14 +79,14 @@ class TeamCoderOverview(MethodView):
 
 @bp.route("/team/cohorts")
 class TeamCohorts(MethodView):
-    @require_feature("user_management")
+    @require_feature("team")
     @require_role("manager")
     @bp.response(200, TeamCohortListEnvelopeSchema)
     def get(self):
         cohorts = Cohort.query.order_by(Cohort.sequence_no.desc()).all()
         return {"status": 200, "message": "Cohorts retrieved successfully.", "data": cohorts}
 
-    @require_feature("user_management")
+    @require_feature("team")
     @require_role("manager")
     @bp.arguments(TeamCohortCreateSchema)
     @bp.response(201, TeamCohortEnvelopeSchema)
@@ -103,7 +103,7 @@ class TeamCohorts(MethodView):
 
 @bp.route("/team/cohorts/eligible-members")
 class TeamCohortEligibleMembers(MethodView):
-    @require_feature("user_management")
+    @require_feature("team")
     @require_role("manager")
     @bp.response(200, CodingUserSummaryListEnvelopeSchema)
     def get(self):
@@ -114,7 +114,7 @@ class TeamCohortEligibleMembers(MethodView):
 
 @bp.route("/team/stage-targets/change")
 class TeamStageTargetChange(MethodView):
-    @require_feature("user_management")
+    @require_feature("team")
     @require_role("manager")
     @bp.arguments(ChangeStageTargetSchema)
     @bp.response(201, StageTargetRuleEnvelopeSchema)
@@ -388,7 +388,7 @@ class CoderStageExceptions(MethodView):
 
 @bp.route("/team/foundation-target-rules")
 class FoundationTargets(MethodView):
-    @require_feature("user_management")
+    @require_feature("team")
     @require_role("manager")
     @bp.response(200, StageTargetRuleListEnvelopeSchema)
     def get(self):
@@ -401,7 +401,7 @@ class FoundationTargets(MethodView):
 
 @bp.route("/team/foundation-targets/change")
 class FoundationTargetChange(MethodView):
-    @require_feature("user_management")
+    @require_feature("team")
     @require_role("manager")
     @bp.arguments(ChangeFoundationTargetSchema)
     @bp.response(201, StageTargetRuleEnvelopeSchema)
@@ -413,7 +413,7 @@ class FoundationTargetChange(MethodView):
 
 @bp.route("/team/users/<int:user_id>/stage-changes")
 class TeamUserStageChange(MethodView):
-    @require_feature("user_management")
+    @require_feature("team")
     @require_role("manager")
     @bp.arguments(ChangeUserStageSchema)
     @bp.response(201, UserStageChangeEnvelopeSchema)

@@ -23,7 +23,10 @@ class Features(MethodView):
     @require_feature("role_management")
     @bp.response(200, FeatureListEnvelopeSchema)
     def get(self):
-        features = Feature.query.all()
+        query = Feature.query
+        if Feature.query.filter_by(codename="team").first() is not None:
+            query = query.filter(Feature.codename != "stage_view")
+        features = query.all()
         return {"status": 200, "message": "Features retrieved successfully.", "data": features}
 
     @require_role("super_admin")
@@ -87,6 +90,8 @@ class RoleFeatures(MethodView):
     @bp.response(200, FeatureListEnvelopeSchema)
     def post(self, data, role_id):
         role = Role.query.get_or_404(role_id)
+        if role.role_type.code == "client" and data.get("can_write", False):
+            abort(422, message="Client roles are read-only.")
         feature = db.session.get(Feature, data["feature_id"])
         if feature is None:
             abort(400, message="feature_id must reference an existing feature.")

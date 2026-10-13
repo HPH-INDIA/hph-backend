@@ -50,7 +50,7 @@ class ProjectOptions(MethodView):
     @bp.response(200, ProjectListEnvelope)
     def get(self):
         user = getattr(g, "user", None)
-        if not (has_feature(user, "user_management") or has_feature(user, "project_management")):
+        if not (has_feature(user, "user_management") or has_feature(user, "project_management") or has_feature(user, "role_management")):
             abort(403, message="Project options require user management or project management access.")
         return {"status": 200, "message": "Projects retrieved successfully.",
                 "data": [{"id": p.id, "name": p.name} for p in Project.query.order_by(Project.name).all()]}
@@ -60,7 +60,10 @@ class Projects(MethodView):
     @require_feature("project_management", access="read")
     @bp.response(200, ProjectListEnvelope)
     def get(self):
-        rows = db.session.query(Project, db.func.count(User.id)).outerjoin(User, User.project_id == Project.id).group_by(Project.id).order_by(Project.name).all()
+        query = db.session.query(Project, db.func.count(User.id)).outerjoin(User, User.project_id == Project.id)
+        if g.user.role.role_type.code == "client":
+            query = query.filter(Project.id == g.user.project_id)
+        rows = query.group_by(Project.id).order_by(Project.name).all()
         return {"status": 200, "message": "Projects retrieved successfully.", "data": [serialize(p, count) for p, count in rows]}
 
     @require_feature("project_management", access="write")

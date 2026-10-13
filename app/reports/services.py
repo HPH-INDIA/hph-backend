@@ -81,7 +81,7 @@ def get_monthly_goal(user, month_value=None):
     return get_period_goal(members, month_start, month_end, "team" if is_lead else "self")
 
 
-def get_period_goal(members, from_date, to_date, scope="team", program=None):
+def get_period_goal(members, from_date, to_date, scope="team", program=None, level=None):
     """Batch calendar targets for explicitly scoped users and a reporting period.
 
     Exclude weekends, office holidays, and full leave; apply saved CPD
@@ -197,6 +197,7 @@ def get_period_goal(members, from_date, to_date, scope="team", program=None):
                 KaironUploadBatch.superseded_at.is_(None),
                 KaironChartRecord.status == "Completed",
                 func.upper(KaironChartRecord.program) == program if program else True,
+                KaironChartRecord.level == level if level else True,
                 unique_completed_production(),
                 KaironChartRecord.user_id.in_(member_ids),
                 KaironChartRecord.completed_date >= from_date,
@@ -266,7 +267,7 @@ def get_period_goal(members, from_date, to_date, scope="team", program=None):
     }
 
 
-def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=None):
+def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=None, level=None):
     """Calculate daily and period efficiency from the existing source rows.
 
     A full-day stage target represents eight hours. Its adjustment is based
@@ -328,6 +329,8 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
     )
     if program:
         kairon_query = kairon_query.filter(func.upper(KaironChartRecord.program) == program)
+    if level:
+        kairon_query = kairon_query.filter(KaironChartRecord.level == level)
     kairon_rows = kairon_query.group_by(
         KaironChartRecord.user_id, KaironChartRecord.completed_date
     ).all()
@@ -828,7 +831,7 @@ def get_manual_team_range(viewer, from_date, to_date):
     return {"from_date": from_date, "to_date": to_date, "teams": teams}
 
 
-def get_coding_dashboard(from_date, to_date, program=None, lead_id=None, cohort_id=None, include_daily=False):
+def get_coding_dashboard(from_date, to_date, program=None, lead_id=None, cohort_id=None, include_daily=False, project_id=None):
     """One card per historically eligible user for the given window (§4.4): Kairon chart
     counts include completed charts only, scoped by each chart's completed
     date. Manual production/hours/pending totals are scoped by each record's
@@ -843,10 +846,12 @@ def get_coding_dashboard(from_date, to_date, program=None, lead_id=None, cohort_
         .join(RoleType)
         .join(Project, User.project_id == Project.id)
         .filter(
-            Project.name == "CODING",
+            Project.id == project_id if project_id is not None else Project.name == "CODING",
             RoleType.code.in_(("lead", "employee")),
         )
     )
+    if project_id is not None:
+        users_query = users_query.filter(User.project_id == project_id)
     if cohort_id is not None:
         if db.session.get(Cohort, cohort_id) is None:
             abort(400, message="cohortId must reference an existing cohort.")

@@ -100,6 +100,8 @@ def create_app():
     from app.sessions.hooks import load_session
     app.before_request(decrypt_request_body)
     app.before_request(load_session)
+    from app.clients import enforce_client_access
+    app.before_request(enforce_client_access)
     app.after_request(encrypt_response_body)
 
     @app.get("/healthz")

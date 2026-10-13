@@ -36,7 +36,10 @@ from app.users.schemas import (
 
 def _visible_users():
     """Super Admin accounts never appear in user lists or selection options."""
-    return User.query.join(Role).join(RoleType).filter(RoleType.code != "super_admin")
+    query = User.query.join(Role).join(RoleType).filter(RoleType.code != "super_admin")
+    if g.user.role.role_type.code == "client":
+        query = query.filter(User.project_id == g.user.project_id)
+    return query
 
 
 def _page(query, page, page_size):
@@ -212,7 +215,7 @@ def _manager_coder_query(manager, lead_ids):
 
 @bp.route("/teams/mine")
 class MyManagerTeam(MethodView):
-    @require_feature("user_management")
+    @require_feature("team")
     @require_role("manager")
     @bp.arguments(ManagerTeamQuerySchema, location="query")
     @bp.response(200, ManagerTeamEnvelopeSchema)
@@ -279,7 +282,7 @@ class MyManagerTeam(MethodView):
 
 @bp.route("/teams/mine/assign")
 class AssignManagerTeam(MethodView):
-    @require_feature("user_management")
+    @require_feature("team")
     @require_role("manager")
     @bp.arguments(TeamAssignmentSchema)
     @bp.response(200, UserListEnvelopeSchema)

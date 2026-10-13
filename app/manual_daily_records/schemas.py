@@ -76,6 +76,11 @@ class ManualDailyRecordUpsertSchema(Schema):
 
 
 class ManualDailyRecordSchema(Schema):
+    user_name = fields.Method("get_user_name", dump_only=True, data_key="userName")
+
+    def get_user_name(self, record):
+        return f"{record.user.first_name} {record.user.last_name}".strip()
+
     id = fields.Integer(dump_only=True)
     user_id = fields.Integer(dump_only=True, data_key="userId")
     record_date = fields.Date(dump_only=True, data_key="date")

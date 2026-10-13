@@ -50,6 +50,20 @@ def _set_role_features(role, feature_ids, feature_permissions=None):
         )
 
 
+def _validate_role_scope(data, role=None):
+    role_type = db.session.get(RoleType, data.get("role_type_id", role.role_type_id if role else None))
+    if role_type.code != "client":
+        return
+    permissions = data.get("feature_permissions")
+    if permissions is not None and any(p["can_write"] for p in permissions):
+        abort(422, message="Client roles are read-only.")
+    if permissions is None:
+        if data.get("features"):
+            abort(422, message="Client features require explicit read-only permissions.")
+        if role and "features" not in data and db.session.execute(db.select(role_features.c.role_id).where(role_features.c.role_id == role.id, role_features.c.can_write.is_(True))).first():
+            abort(422, message="Remove write permissions before changing to Client.")
+
+
 @bp.route("/role-types")
 class RoleTypes(MethodView):
     # read-only, fixed seed data (§1) — ungated beyond the normal
@@ -100,6 +114,7 @@ class Roles(MethodView):
     @bp.arguments(RoleSchema)
     @bp.response(201, RoleEnvelopeSchema)
     def post(self, data):
+        _validate_role_scope(data)
         feature_ids = data.pop("features", [])
         feature_permissions = data.pop("feature_permissions", None)
         role = Role(**data)
@@ -123,6 +138,7 @@ class RoleDetail(MethodView):
     @bp.response(200, RoleEnvelopeSchema)
     def patch(self, data, role_id):
         role = Role.query.get_or_404(role_id)
+        _validate_role_scope(data, role)
         feature_ids = data.pop("features", None)
         feature_permissions = data.pop("feature_permissions", None)
         for key, value in data.items():

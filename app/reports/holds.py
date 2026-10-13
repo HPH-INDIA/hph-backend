@@ -52,6 +52,9 @@ def hold_members(viewer):
         ids = [viewer.id]
     elif role == "lead":
         ids = report_team_user_ids(viewer)
+    elif role == "client":
+        from app.clients import project_user_ids
+        ids = project_user_ids(viewer)
     elif role == "manager":
         ids = manager_team_user_ids(viewer.id)
     else:

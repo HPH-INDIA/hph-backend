@@ -316,6 +316,9 @@ def _readable_user_ids(actor):
     role_type = actor.role.role_type.code
     if role_type in {"admin", "super_admin"}:
         return [row.id for row in User.query.all()]
+    if role_type == "client":
+        from app.clients import project_user_ids
+        return project_user_ids(actor)
     if role_type == "manager":
         return [row.id for row in User.query.join(Role).join(RoleType).filter(
             User.project_id == actor.project_id,

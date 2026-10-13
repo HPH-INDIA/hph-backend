@@ -21,25 +21,23 @@ def has_feature(user, codename, access="read"):
 
     if user is None:
         return False
-
-    feature = next(
-        (feature for feature in user.role.features if feature.codename == codename and feature.active),
-        None,
-    )
-    if feature is None:
+    if user.role.role_type.code == "client" and access == "write":
         return False
 
-    permission = db.session.execute(
-        db.select(role_features.c.can_read, role_features.c.can_write).where(
-            role_features.c.role_id == user.role_id,
-            role_features.c.feature_id == feature.id,
-        )
-    ).one_or_none()
-    if permission is None:
+    canonical = "team" if codename == "stage_view" else codename
+    if canonical == "team":
+        from app.features.models import Feature
+        team = Feature.query.filter_by(codename="team").first()
+        if team is not None and not team.active:
+            return False
+    names = {canonical, "stage_view"} if canonical == "team" and access == "read" else {canonical}
+    ids = [feature.id for feature in user.role.features if feature.codename in names and feature.active]
+    if not ids:
         return False
-    if access == "write":
-        return bool(permission.can_write)
-    return bool(permission.can_read or permission.can_write)
+    permissions = db.session.execute(db.select(role_features.c.can_read, role_features.c.can_write).where(
+        role_features.c.role_id == user.role_id, role_features.c.feature_id.in_(ids))).all()
+    return any(bool(permission.can_write) if access == "write" else bool(permission.can_read or permission.can_write)
+               for permission in permissions)
 
 
 def require_role(role_type_code):

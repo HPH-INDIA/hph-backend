@@ -24,6 +24,7 @@ def require_active_participant():
 
 @bp.route("")
 class LeadCoverages(MethodView):
+    @require_feature("team", access="read")
     @require_feature("reports", access="read")
     @require_role_types("lead", "manager")
     @bp.response(200, LeadCoverageListEnvelopeSchema)
@@ -31,6 +32,7 @@ class LeadCoverages(MethodView):
         records = scope_coverages(g.user).order_by(LeadCoverage.created_at.desc(), LeadCoverage.id.desc()).all()
         return {"status": 200, "message": "Lead coverage retrieved.", "data": records}
 
+    @require_feature("team", access="read")
     @require_feature("reports", access="read")
     @require_role_types("lead", "manager")
     @bp.arguments(LeadCoverageCreateSchema)
@@ -43,6 +45,7 @@ class LeadCoverages(MethodView):
 
 @bp.route("/options")
 class LeadCoverageOptions(MethodView):
+    @require_feature("team", access="read")
     @require_feature("reports", access="read")
     @require_role_types("lead", "manager")
     @bp.response(200, LeadCoverageOptionsEnvelopeSchema)
@@ -54,6 +57,7 @@ class LeadCoverageOptions(MethodView):
 
 @bp.route("/<int:coverage_id>/approve")
 class ApproveLeadCoverage(MethodView):
+    @require_feature("team", access="read")
     @require_feature("reports", access="write")
     @require_role("lead")
     @bp.response(200, LeadCoverageEnvelopeSchema)
@@ -64,6 +68,7 @@ class ApproveLeadCoverage(MethodView):
 
 @bp.route("/<int:coverage_id>/reject")
 class RejectLeadCoverage(MethodView):
+    @require_feature("team", access="read")
     @require_feature("reports", access="write")
     @require_role("lead")
     @bp.response(200, LeadCoverageEnvelopeSchema)
@@ -74,6 +79,7 @@ class RejectLeadCoverage(MethodView):
 
 @bp.route("/<int:coverage_id>/cancel")
 class CancelLeadCoverage(MethodView):
+    @require_feature("team", access="read")
     @require_feature("reports", access="read")
     @require_role_types("lead", "manager")
     @bp.response(200, LeadCoverageEnvelopeSchema)

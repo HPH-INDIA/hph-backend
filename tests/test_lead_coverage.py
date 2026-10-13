@@ -283,6 +283,8 @@ def test_reports_read_only_allows_requests_and_cancel_but_not_approval(api_clien
     role_id = read_only_role.id
     db.session.execute(role_features.insert().values(role_id=role_id, feature_id=feature.id,
                                                     can_read=True, can_write=False))
+    team = Feature.query.filter_by(codename="team").one()
+    db.session.execute(role_features.insert().values(role_id=role_id, feature_id=team.id, can_read=True, can_write=False))
     users["source"].role_id = role_id
     db.session.commit()
     where = (role_features.c.role_id == role_id) & (role_features.c.feature_id == feature.id)

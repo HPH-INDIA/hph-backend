@@ -3,7 +3,6 @@ from marshmallow import Schema, fields
 from app.extensions import db
 from app.features.models import Feature
 from app.responses import envelope_schema
-from app.roles.models import role_features
 
 
 class LoginSchema(Schema):
@@ -40,24 +39,13 @@ class RoleProfileSchema(Schema):
 
     @staticmethod
     def _permissions(role):
-        rows = db.session.execute(
-            db.select(
-                Feature.codename,
-                role_features.c.can_read,
-                role_features.c.can_write,
-            )
-            .select_from(role_features.join(Feature, Feature.id == role_features.c.feature_id))
-            .where(role_features.c.role_id == role.id, Feature.active.is_(True))
-            .order_by(Feature.codename)
-        ).all()
-        return [
-            {
-                "codename": row.codename,
-                "canRead": row.can_read,
-                "canWrite": row.can_write,
-            }
-            for row in rows
-        ]
+        from app.roles.permissions import canonical_permissions
+        permissions = canonical_permissions(role)
+        features = {feature.id: feature for feature in Feature.query.filter(Feature.id.in_([p["feature_id"] for p in permissions]), Feature.active.is_(True))}
+        return [{"codename": features[permission["feature_id"]].codename,
+                 "canRead": permission["can_read"], "canWrite": permission["can_write"]}
+                for permission in permissions if permission["feature_id"] in features]
+
 
 
 class UserProfileSchema(Schema):

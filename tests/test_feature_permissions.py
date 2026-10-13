@@ -6,7 +6,7 @@ from app.roles.models import Role, RoleType
 
 
 def test_read_only_feature_allows_reads_and_rejects_writes(api_client, manager_user):
-    feature = Feature.query.filter_by(codename="user_management").one()
+    feature = Feature.query.filter_by(codename="team").one()
     assignment = db.session.execute(
         db.select(role_features.c.can_read, role_features.c.can_write).where(
             role_features.c.role_id == manager_user.role_id,
@@ -24,8 +24,8 @@ def test_read_only_feature_allows_reads_and_rejects_writes(api_client, manager_u
             .values(can_read=True, can_write=False)
         )
         db.session.commit()
-        assert has_feature(manager_user, "user_management", "read")
-        assert not has_feature(manager_user, "user_management", "write")
+        assert has_feature(manager_user, "team", "read")
+        assert not has_feature(manager_user, "team", "write")
 
         status, body = api_client.login("test-manager@example.com", "test-password")
         assert status == 200, body

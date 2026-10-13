@@ -9,6 +9,8 @@ from app.kairon.production import unique_completed_production
 from app.manual_daily_records.models import ManualDailyRecord
 from app.manual_daily_records.services import manual_review_user_ids
 from app.reports import bp
+from app.reports.client_dashboard import get_client_dashboard, restrict_client_cards
+from app.reports.schemas import ClientDashboardQuerySchema, ClientDashboardEnvelopeSchema
 from app.reports.schemas import (
     BulkApproveManualDailyRecordsSchema,
     BulkApproveResultEnvelopeSchema,
@@ -66,6 +68,7 @@ from app.users.hierarchy import (
     manager_lead_team_user_ids, manager_team_user_ids, report_team_user_ids,
 )
 from app.users.models import User
+from app.clients import project_user_ids
 
 # One feature controls both Kairon and Manual report visibility. Write access
 # is narrowed further by role at each action endpoint.
@@ -110,6 +113,8 @@ class ReportsKaironCompletedCounts(MethodView):
             query = query.filter(KaironChartRecord.user_id == g.user.id)
         elif role_type_code == "manager":
             query = query.filter(KaironChartRecord.user_id.in_(manager_team_user_ids(g.user.id)))
+        if role_type_code == "client":
+            query = query.filter(KaironChartRecord.user_id.in_(project_user_ids(g.user)))
         if args.get("from_date"):
             query = query.filter(KaironChartRecord.completed_date >= args["from_date"])
         if args.get("to_date"):
@@ -128,6 +133,8 @@ def _scope_kairon_records_to_viewer(query):
         return query.filter(KaironChartRecord.user_id == g.user.id)
     if role_type_code == "manager":
         return query.filter(KaironChartRecord.user_id.in_(manager_team_user_ids(g.user.id)))
+    if role_type_code == "client":
+        return query.filter(KaironChartRecord.user_id.in_(project_user_ids(g.user)))
     return query
 
 
@@ -336,9 +343,10 @@ class ReportsManual(MethodView):
         # Own records only, every status - the point of this tab is
         # seeing where all of your own submissions currently stand (§3.2).
         query = (
-            ManualDailyRecord.query.filter_by(user_id=g.user.id)
-            .order_by(ManualDailyRecord.record_date.desc(), ManualDailyRecord.id.desc())
+            ManualDailyRecord.query.filter(ManualDailyRecord.user_id.in_(project_user_ids(g.user)))
+            if g.user.role.role_type.code == "client" else ManualDailyRecord.query.filter_by(user_id=g.user.id)
         )
+        query = query.order_by(ManualDailyRecord.record_date.desc(), ManualDailyRecord.id.desc())
         if args.get("from_date"):
             query = query.filter(ManualDailyRecord.record_date >= args["from_date"])
         if args.get("to_date"):
@@ -370,6 +378,7 @@ class ReportsManualReviews(MethodView):
             if args.get("lead_id") is not None:
                 team_ids = report_team_user_ids(g.user, include_leads=False, lead_id=args["lead_id"])
                 query = query.filter(ManualDailyRecord.user_id.in_(team_ids))
+        query = query.order_by(ManualDailyRecord.record_date.desc(), ManualDailyRecord.id.desc())
         if args.get("from_date"):
             query = query.filter(ManualDailyRecord.record_date >= args["from_date"])
         if args.get("to_date"):
@@ -439,7 +448,7 @@ class ReportsManualReviewsBulkReject(MethodView):
 @bp.route("/dashboards/coding")
 class CodingDashboard(MethodView):
     @require_feature("dashboard")
-    @require_role_types("super_admin", "admin", "manager")
+    @require_role_types("super_admin", "admin", "manager", "client")
     @bp.arguments(CodingDashboardQuerySchema, location="query")
     @bp.response(200, CodingDashboardEnvelopeSchema)
     def get(self, args):
@@ -453,8 +462,27 @@ class CodingDashboard(MethodView):
             lead_id=args.get("lead_id"),
             cohort_id=args.get("cohort_id"),
             include_daily=args.get("include_daily", False),
+            project_id=g.user.project_id if g.user.role.role_type.code == "client" else None,
         )
+        if g.user.role.role_type.code == "client":
+            restrict_client_cards(cards)
         return {"status": 200, "message": "Coding project dashboard retrieved successfully.", "data": cards}
+
+
+@bp.route("/reports/project-overview")
+class ClientProjectOverview(MethodView):
+    @require_feature(REPORTS_FEATURE)
+    @require_role("client")
+    @bp.arguments(CodingDashboardQuerySchema, location="query")
+    @bp.response(200, CodingDashboardEnvelopeSchema)
+    def get(self, args):
+        from_date, to_date = resolve_dashboard_window(args)
+        if from_date > to_date:
+            abort(400, message="from must be on or before to.")
+        cards = get_coding_dashboard(from_date, to_date, program=args.get("program"),
+                                    include_daily=args.get("include_daily", False), project_id=g.user.project_id)
+        restrict_client_cards(cards)
+        return {"status": 200, "message": "Assigned project overview retrieved successfully.", "data": cards}
 
 
 @bp.route("/dashboards/my-efficiency")
@@ -522,8 +550,8 @@ class ManagerDashboard(MethodView):
 
 @bp.route("/reports/kairon/holds")
 class ReportsKaironHolds(MethodView):
-    @require_feature(REPORTS_FEATURE)
-    @require_role_types("employee", "lead", "manager")
+    @require_feature("chart_holds")
+    @require_role_types("employee", "lead", "manager", "client")
     @bp.arguments(KaironHoldQuerySchema, location="query")
     @bp.response(200, KaironRecordPageEnvelopeSchema)
     def get(self, args):
@@ -533,8 +561,8 @@ class ReportsKaironHolds(MethodView):
 
 @bp.route("/reports/kairon/holds-summary")
 class ReportsKaironHoldsSummary(MethodView):
-    @require_feature(REPORTS_FEATURE)
-    @require_role_types("employee", "lead", "manager")
+    @require_feature("chart_holds")
+    @require_role_types("employee", "lead", "manager", "client")
     @bp.arguments(KaironHoldQuerySchema, location="query")
     @bp.response(200, KaironHoldSummaryEnvelopeSchema)
     def get(self, args):
@@ -543,3 +571,32 @@ class ReportsKaironHoldsSummary(MethodView):
             "message": "Current chart hold summary retrieved successfully.",
             "data": hold_summary(hold_members(g.user), args),
         }
+
+
+@bp.route("/dashboards/client")
+class ClientDashboard(MethodView):
+    @require_feature("dashboard")
+    @require_role_types("client")
+    @bp.arguments(ClientDashboardQuerySchema, location="query")
+    @bp.response(200, ClientDashboardEnvelopeSchema)
+    def get(self, args):
+        from_date, to_date = resolve_dashboard_window(args)
+        if from_date > to_date:
+            abort(400, message="from must be on or before to.")
+        goal_to_date = _month_window(args["month"])[1] if args.get("month") else to_date
+        return {"data": get_client_dashboard(g.user, from_date, to_date, goal_to_date,
+                                             program=args.get("program"), user_id=args.get("user_id"))}
+
+
+@bp.route("/team/client-members")
+class ClientTeamMembers(MethodView):
+    @require_feature("team")
+    @require_role_types("client")
+    def get(self):
+        from app.roles.models import Role, RoleType
+        members = (db.session.query(User, RoleType.code).select_from(User).join(Role).join(RoleType)
+                   .filter(User.project_id == g.user.project_id, RoleType.code.in_(["lead", "employee"]))
+                   .order_by(User.first_name, User.last_name, User.id).all())
+        return {"status": 200, "message": "Project members retrieved.", "data": [
+            {"userId": user.id, "name": f"{user.first_name} {user.last_name}".strip(),
+             "reviewLevel": "2LR" if role == "lead" else "1LR"} for user, role in members]}

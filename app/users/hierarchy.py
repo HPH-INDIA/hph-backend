@@ -4,8 +4,8 @@
 # nothing "below" it, and no one (including super_admin) may create/delete a
 # super_admin, so it never appears as a value here.
 CAN_MANAGE_ROLE_TYPE = {
-    "super_admin": {"admin", "manager", "lead", "employee"},
-    "admin": {"manager", "lead", "employee"},
+    "super_admin": {"admin", "manager", "lead", "employee", "client"},
+    "admin": {"manager", "lead", "employee", "client"},
     "manager": {"lead", "employee"},
     "lead": set(),
     "employee": set(),

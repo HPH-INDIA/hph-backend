@@ -567,3 +567,43 @@ class KaironHoldSummarySchema(Schema):
 KaironHoldSummaryEnvelopeSchema = envelope_schema(
     "KaironHoldSummaryEnvelopeSchema", fields.Nested(KaironHoldSummarySchema)
 )
+
+
+# Explicit allowlist: client performance never serializes attendance or training metadata.
+CLIENT_DAILY_FIELDS = ("date", "daily_target", "manual_charts", "kairon_charts",
+    "target_minutes", "adjusted_target", "adjusted_cpd", "manual_efficiency_percent",
+    "kairon_efficiency_percent", "manual_cpd", "kairon_cpd", "target_cpd",
+    "downtime_minutes", "idle_minutes", "leave_minutes", "meeting_minutes", "excluded_minutes", "manual_status")
+CLIENT_SUMMARY_FIELDS = ("from_date", "to_date", "manual_charts", "kairon_charts",
+    "adjusted_target", "adjusted_cpd", "target_minutes", "calculated_days",
+    "manual_efficiency_percent", "kairon_efficiency_percent", "manual_cpd", "kairon_cpd", "target_cpd")
+
+class ClientEfficiencySchema(EfficiencySummarySchema):
+    class Meta:
+        fields = (*CLIENT_SUMMARY_FIELDS, "daily")
+    daily = fields.List(fields.Nested(DailyEfficiencySchema(only=CLIENT_DAILY_FIELDS)), dump_only=True)
+
+class ClientSectionSchema(Schema):
+    goal = fields.Nested(PeriodGoalSchema, dump_only=True)
+    efficiency = fields.Nested(ClientEfficiencySchema, dump_only=True)
+
+class ClientMemberSchema(LeadCoderOptionSchema):
+    role_type = fields.String(dump_only=True, data_key="roleType")
+    efficiency = fields.Nested(ClientEfficiencySchema, dump_only=True)
+
+class ClientDashboardSchema(Schema):
+    overview = fields.Nested(ClientSectionSchema, dump_only=True)
+    holds = fields.List(fields.Nested(KaironChartRecordSchema(exclude=("batch_id", "coding_analyst"))), dump_only=True)
+    charts = fields.List(fields.Nested(KaironChartRecordSchema(exclude=("batch_id", "coding_analyst"))), dump_only=True)
+    records = fields.List(fields.Nested(ManualDailyRecordSchema(exclude=("reviewed_by_id", "reviewed_at", "rejection_reason", "created_at", "updated_at"))), dump_only=True)
+    from_date = fields.Date(dump_only=True, data_key="from")
+    to_date = fields.Date(dump_only=True, data_key="to")
+    qa = fields.Nested(ClientSectionSchema, dump_only=True)
+    coders = fields.Nested(ClientSectionSchema, dump_only=True)
+    members = fields.List(fields.Nested(ClientMemberSchema), dump_only=True)
+
+class ClientDashboardQuerySchema(EfficiencyQuerySchema):
+    user_id = fields.Integer(load_default=None, data_key="userId", validate=validate.Range(min=1))
+    program = fields.String(load_default=None, validate=validate.OneOf(["PVP", "FOUNDATION"]))
+
+ClientDashboardEnvelopeSchema = envelope_schema("ClientDashboardEnvelopeSchema", fields.Nested(ClientDashboardSchema))

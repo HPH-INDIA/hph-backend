@@ -9,7 +9,7 @@ from app.sessions.schemas import LoginEnvelopeSchema  # noqa: F401 (re-exported 
 from app.sessions.schemas import RoleProfileSchema
 from app.users.models import User
 
-PROJECT_REQUIRED_ROLE_TYPES = {"manager", "lead", "employee"}
+PROJECT_REQUIRED_ROLE_TYPES = {"manager", "lead", "employee", "client"}
 PROJECT_FORBIDDEN_ROLE_TYPES = {"admin", "super_admin"}
 REPORTING_PARENT_ROLE_TYPES = {"lead": "manager", "employee": "lead"}
 

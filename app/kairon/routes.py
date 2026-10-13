@@ -135,6 +135,9 @@ class KaironCharts(MethodView):
             query = query.filter(KaironChartRecord.user_id == g.user.id)
         elif role_type == "lead":
             query = query.filter(KaironChartRecord.user_id.in_(report_team_user_ids(g.user)))
+        if role_type == "client":
+            from app.clients import project_user_ids
+            query = query.filter(KaironChartRecord.user_id.in_(project_user_ids(g.user)))
         if args.get("status"):
             query = query.filter(KaironChartRecord.status == args["status"])
         if args.get("level"):
