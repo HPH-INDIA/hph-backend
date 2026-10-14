@@ -210,12 +210,13 @@ def test_upsert_updates_existing_record_instead_of_duplicating():
     assert second.production_count == 25
 
 
-def test_upsert_resets_status_to_pending_on_edit():
+def test_upsert_resets_rejected_record_to_pending_on_edit():
     user = _get_or_create_user("mdr-owner3@example.com", "Owner", "Three", "TEST-MDR-3")
     manager = _get_or_create_user("mdr-manager1@example.com", "Manager", "One", "TEST-MDR-MGR-1")
 
     record = upsert_own_record(user.id, _entry())
-    record.status = "approved"
+    record.status = "rejected"
+    record.rejection_reason = "Correct charts"
     record.reviewed_by_id = manager.id
     record.reviewed_at = dt.datetime.now(dt.timezone.utc)
     db.session.commit()
@@ -225,6 +226,7 @@ def test_upsert_resets_status_to_pending_on_edit():
     assert edited.status == "pending"
     assert edited.reviewed_by_id is None
     assert edited.reviewed_at is None
+    assert edited.rejection_reason is None
     assert edited.production_count == 99
 
 
@@ -319,7 +321,7 @@ def test_program_counts_are_added_into_production_total(api_client, employee_use
 
     status, body = api_client.post(
         "/api/manual-daily-records",
-        _entry_body(productionCount=None, pvpCount=11, foundationCount=7),
+        _entry_body(productionCount=None, pvpCount=11, foundationCount=7, foundationHours=2),
     )
 
     assert status == 200, body
@@ -550,3 +552,117 @@ def test_bulk_upload_reports_row_errors_and_imports_nothing(api_client, manager_
     assert status == 422, body
     assert len(body["data"]["rowErrors"]) == 2
     assert ManualDailyRecord.query.filter_by(record_date=dt.date(2026, 9, 18)).count() == 0
+
+
+@pytest.mark.parametrize("record_status,expected", [("pending", 200), ("approved", 409), ("rejected", 409)])
+def test_coder_deletes_only_own_pending(api_client, employee_user, record_status, expected):
+    record = upsert_own_record(employee_user.id, _entry())
+    record.status = record_status
+    db.session.commit()
+    record_id = record.id
+    api_client.login(employee_user.email, "test-password")
+    status, body = api_client.delete(f"/api/manual-daily-records/{record_id}")
+    assert status == expected, body
+    db.session.expire_all()
+    assert (db.session.get(ManualDailyRecord, record_id) is None) == (expected == 200)
+
+
+def test_coder_cannot_edit_approved_or_delete_others(api_client, employee_user):
+    record = upsert_own_record(employee_user.id, _entry())
+    record.status = "approved"
+    db.session.commit()
+    other = _get_or_create_user("mdr-other-delete@example.com", "Other", "Coder", "TEST-MDR-OTHER")
+    other_record = upsert_own_record(other.id, _entry())
+    api_client.login(employee_user.email, "test-password")
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(productionCount=99))
+    assert status == 409, body
+    status, body = api_client.delete(f"/api/manual-daily-records/{other_record.id}")
+    assert status == 404, body
+    db.session.expire_all()
+    assert db.session.get(ManualDailyRecord, record.id).production_count == 12
+    assert db.session.get(ManualDailyRecord, other_record.id) is not None
+
+
+def test_lead_cannot_delete(api_client, employee_user, lead_user):
+    record = upsert_own_record(employee_user.id, _entry())
+    api_client.login(lead_user.email, "test-password")
+    assert api_client.delete(f"/api/manual-daily-records/{record.id}")[0] == 403
+    assert api_client.post("/api/manual-daily-records/bulk-delete", {"ids": [record.id]})[0] == 403
+
+
+def test_manager_can_review_and_delete_all_statuses(api_client, employee_user, lead_user, manager_user):
+    pending = upsert_own_record(employee_user.id, _entry())
+    reject_pending = upsert_own_record(employee_user.id, _entry(record_date=dt.date(2026, 9, 11)))
+    qa = upsert_own_record(lead_user.id, _entry())
+    ids = [pending.id, reject_pending.id, qa.id]
+    api_client.login(manager_user.email, "test-password")
+    status, body = api_client.post(f"/api/manual-daily-records/{pending.id}/approve")
+    assert status == 200, body
+    status, body = api_client.post("/api/reports/manual/reviews/bulk-reject", {"items": [{"id": reject_pending.id, "reason": "Correct charts"}]})
+    assert status == 200, body
+    assert body["data"]["rejected"] == [reject_pending.id]
+    status, body = api_client.post("/api/manual-daily-records/bulk-delete", {"ids": ids + [qa.id]})
+    assert status == 200, body
+    assert set(body["data"]["deleted"]) == set(ids)
+    db.session.expire_all()
+    assert ManualDailyRecord.query.filter(ManualDailyRecord.id.in_(ids)).count() == 0
+
+
+def test_manager_bulk_delete_is_atomic_and_scoped(api_client, manager_user):
+    own_team = _manager_team_member(manager_user, "delete-scope")
+    allowed = upsert_own_record(own_team.id, _entry())
+    outsider = _get_or_create_user("mdr-outside-delete@example.com", "Outside", "Coder", "TEST-MDR-OUTSIDE")
+    denied = upsert_own_record(outsider.id, _entry())
+    api_client.login(manager_user.email, "test-password")
+    assert api_client.post("/api/manual-daily-records/bulk-delete", {"ids": []})[0] == 422
+    assert api_client.post("/api/manual-daily-records/bulk-delete", {"ids": [allowed.id, denied.id]})[0] == 404
+    db.session.expire_all()
+    assert db.session.get(ManualDailyRecord, allowed.id) is not None
+    assert db.session.get(ManualDailyRecord, denied.id) is not None
+    assert api_client.delete(f"/api/manual-daily-records/{denied.id}")[0] == 404
+    assert api_client.delete(f"/api/manual-daily-records/{allowed.id}")[0] == 200
+
+
+def test_manual_date_sorting_is_applied_before_pagination(api_client, employee_user):
+    for day in [10, 11, 12]:
+        upsert_own_record(employee_user.id, _entry(record_date=dt.date(2026, 9, day)))
+    api_client.login(employee_user.email, "test-password")
+    status, body = api_client.get("/api/reports/manual?sortDirection=asc&pageSize=1")
+    assert status == 200, body
+    assert body["data"]["items"][0]["date"] == "2026-09-10"
+    status, body = api_client.get("/api/reports/manual?sortDirection=desc&pageSize=1")
+    assert status == 200, body
+    assert body["data"]["items"][0]["date"] == "2026-09-12"
+
+
+@pytest.mark.parametrize("hours", [None, 0, -1, 8])
+def test_mixed_chart_entry_requires_valid_foundation_duration(api_client, employee_user, hours):
+    api_client.login(employee_user.email, "test-password")
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(pvpCount=14, foundationCount=5,
+        foundationHours=hours, techIssuesDowntimeHours=0, noInventoryIdleTimeHours=0, meetingEngagementHours=0))
+    assert status == 422, body
+    assert ManualDailyRecord.query.filter_by(user_id=employee_user.id).count() == 0
+
+
+def test_foundation_duration_round_trip_and_clear_when_mix_changes(api_client, employee_user):
+    api_client.login(employee_user.email, "test-password")
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(pvpCount=14, foundationCount=5, foundationHours=2))
+    assert status == 200, body
+    assert body["data"]["foundationHours"] == "2.00"
+    status, body = api_client.get("/api/reports/manual")
+    assert status == 200, body
+    assert body["data"]["items"][0]["foundationHours"] == "2.00"
+    status, body = api_client.post("/api/manual-daily-records", _entry_body(pvpCount=14, foundationCount=0, foundationHours=2))
+    assert status == 200, body
+    assert body["data"]["foundationHours"] is None
+
+
+def test_total_manual_hours_limit_includes_foundation_and_huddles(api_client, employee_user):
+    api_client.login(employee_user.email, "test-password")
+    entry = _entry_body(pvpCount=14, foundationCount=5, foundationHours=2, techIssuesDowntimeHours=1,
+        noInventoryIdleTimeHours=1, leaveHours=1, meetingEngagementHours=5, meetingType="Huddle")
+    assert api_client.post("/api/manual-daily-records", entry)[0] == 200
+    status, body = api_client.post("/api/manual-daily-records", {**entry, "meetingEngagementHours": 5.01})
+    assert status == 422, body
+    assert "hoursTotal" in body["data"]["errors"]
+    assert ManualDailyRecord.query.filter_by(user_id=employee_user.id).one().meeting_engagement_hours == 5

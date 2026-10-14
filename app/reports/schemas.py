@@ -50,7 +50,7 @@ class ReportPeriodQuerySchema(PaginationQuerySchema):
 
 
 class SelfManualRecordsQuerySchema(ReportPeriodQuerySchema):
-    pass
+    sort_direction = fields.String(load_default="desc", validate=validate.OneOf(["asc", "desc"]), data_key="sortDirection")
 
 
 class ManualReviewQuerySchema(ManualDailyRecordQuerySchema, PaginationQuerySchema):
@@ -363,7 +363,7 @@ class DailyEfficiencySchema(Schema):
     meeting_minutes = fields.Integer(dump_only=True, data_key="meetingMinutes")
     excluded_minutes = fields.Integer(dump_only=True, data_key="excludedMinutes")
     productive_minutes = fields.Integer(dump_only=True, allow_none=True, data_key="productiveMinutes")
-    target_minutes = fields.Integer(dump_only=True, allow_none=True, data_key="targetMinutes")
+    target_minutes = fields.Float(dump_only=True, allow_none=True, data_key="targetMinutes")
     adjusted_target = fields.Decimal(dump_only=True, allow_none=True, as_string=True, data_key="adjustedTarget")
     adjusted_cpd = fields.Decimal(
         dump_only=True, allow_none=True, as_string=True, places=2, data_key="adjustedCpd"
@@ -390,7 +390,7 @@ class EfficiencySummarySchema(Schema):
     inside_minutes = fields.Integer(dump_only=True, data_key="insideMinutes")
     login_days = fields.Integer(dump_only=True, data_key="loginDays")
     productive_minutes = fields.Integer(dump_only=True, data_key="productiveMinutes")
-    target_minutes = fields.Integer(dump_only=True, data_key="targetMinutes")
+    target_minutes = fields.Float(dump_only=True, data_key="targetMinutes")
     calculated_days = fields.Integer(dump_only=True, data_key="calculatedDays")
     manual_efficiency_percent = fields.Decimal(
         dump_only=True, allow_none=True, as_string=True, data_key="manualEfficiencyPercent"

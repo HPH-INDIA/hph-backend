@@ -10,6 +10,7 @@ from app.encryption.passwords import hash_password
 from app.extensions import db
 from app.kairon.models import KaironChartRecord, KaironUploadBatch
 from app.manual_daily_records import productivity
+from app.manual_daily_records.models import ManualDailyRecord
 from app.manual_daily_records.services import upsert_own_record
 from app.reports.lead_dashboard import get_lead_dashboard
 from app.roles.models import Role, RoleType
@@ -163,3 +164,61 @@ def test_rollup_batches_queries_instead_of_querying_each_coder(team):
         assert data["coders"]["goal"]["adjusted_target_charts"] == Decimal("33.50")
     finally:
         event.remove(db.engine, "before_cursor_execute", count_queries)
+
+
+def test_rejected_manual_records_leave_calculations_but_remain_in_history(team, api_client):
+    qa, coder, other, _ = team
+    record = ManualDailyRecord.query.filter_by(user_id=coder.id, record_date=DAY).one()
+    record.meeting_engagement_hours = Decimal("1")
+    record.adjusted_cpd = Decimal("26.25")
+    record_id = record.id
+    db.session.commit()
+    api_client.login(qa.email, "test-password")
+    status, before = api_client.get(f"/api/dashboards/lead?date={DAY}")
+    assert status == 200, before
+    assert before["data"]["coders"]["efficiency"]["manualCharts"] == 37
+    status, rejected = api_client.post(f"/api/manual-daily-records/{record_id}/reject", {"reason":"Incorrect production"})
+    assert status == 200, rejected
+    assert rejected["data"]["status"] == "rejected"
+    status, after = api_client.get(f"/api/dashboards/lead?date={DAY}")
+    assert status == 200, after
+    totals = after["data"]["coders"]["efficiency"]
+    assert totals["manualCharts"] == 7  # Other coder's pending record still counts.
+    assert totals["kaironCharts"] == before["data"]["coders"]["efficiency"]["kaironCharts"] == 5
+    assert totals["targetMinutes"] == 720  # Rejected meeting no longer reduces capacity.
+    assert Decimal(totals["adjustedCpd"]) == Decimal("3.50")
+    assert after["data"]["coders"]["goal"]["manualCharts"] == 7
+
+    # A rejected-only date must not create production, capacity or saved targets.
+    rejected_day = DAY + dt.timedelta(days=1)
+    db.session.add(ManualDailyRecord(user_id=coder.id, record_date=rejected_day, production_count=80,
+        pvp_count=80, foundation_count=0, tech_issues_downtime_hours=1, no_inventory_idle_time_hours=1,
+        leave_hours=2, meeting_engagement_hours=1, adjusted_cpd=Decimal("2.00"), status="rejected"))
+    db.session.commit()
+    api_client.login(coder.email, "test-password")
+    status, own = api_client.get(f"/api/dashboards/my-efficiency?from={DAY}&to={rejected_day}")
+    assert status == 200, own
+    assert own["data"]["manualCharts"] == 0
+    assert own["data"]["kaironCharts"] == 2
+    assert own["data"]["adjustedCpd"] is None
+    assert own["data"]["targetMinutes"] == 480
+    assert all(day["date"] != str(rejected_day) for day in own["data"]["daily"])
+    day = own["data"]["daily"][0]
+    assert day["meetingMinutes"] == 0
+    assert Decimal(day["manualEfficiencyPercent"]) == 0
+    assert day["adjustedCpd"] is None
+    status, history = api_client.get(f"/api/reports/manual?from={DAY}&to={rejected_day}")
+    assert status == 200, history
+    assert len(history["data"]["items"]) == 2
+    assert all(row["status"] == "rejected" for row in history["data"]["items"])
+    assert next(row for row in history["data"]["items"] if row["id"] == record_id)["productionCount"] == 30
+
+    manager = qa.reports_to
+    api_client.login(manager.email, "test-password")
+    status, overview = api_client.get(f"/api/dashboards/coding?from={DAY}&to={rejected_day}&includeDaily=true")
+    assert status == 200, overview
+    card = next(card for card in overview["data"] if card["userId"] == coder.id)
+    assert card["manual"]["productionCount"] == 0
+    assert Decimal(card["manual"]["meetingEngagementHours"]) == 0
+    assert card["manual"]["recordCount"] == 0
+    assert card["efficiency"]["manualCharts"] == 0

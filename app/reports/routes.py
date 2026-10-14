@@ -346,7 +346,7 @@ class ReportsManual(MethodView):
             ManualDailyRecord.query.filter(ManualDailyRecord.user_id.in_(project_user_ids(g.user)))
             if g.user.role.role_type.code == "client" else ManualDailyRecord.query.filter_by(user_id=g.user.id)
         )
-        query = query.order_by(ManualDailyRecord.record_date.desc(), ManualDailyRecord.id.desc())
+        query = query.order_by(ManualDailyRecord.record_date.asc(), ManualDailyRecord.id.asc()) if args.get("sort_direction") == "asc" else query.order_by(ManualDailyRecord.record_date.desc(), ManualDailyRecord.id.desc())
         if args.get("from_date"):
             query = query.filter(ManualDailyRecord.record_date >= args["from_date"])
         if args.get("to_date"):
@@ -426,7 +426,7 @@ class ReportsManualTeamRange(MethodView):
 @bp.route("/reports/manual/reviews/bulk-approve")
 class ReportsManualReviewsBulkApprove(MethodView):
     @require_feature(REPORTS_FEATURE, access="write")
-    @require_role("lead")
+    @require_role_types("lead", "manager")
     @bp.arguments(BulkApproveManualDailyRecordsSchema)
     @bp.response(200, BulkApproveResultEnvelopeSchema)
     def post(self, data):
@@ -437,7 +437,7 @@ class ReportsManualReviewsBulkApprove(MethodView):
 @bp.route("/reports/manual/reviews/bulk-reject")
 class ReportsManualReviewsBulkReject(MethodView):
     @require_feature(REPORTS_FEATURE, access="write")
-    @require_role("lead")
+    @require_role_types("lead", "manager")
     @bp.arguments(BulkRejectManualDailyRecordsSchema)
     @bp.response(200, BulkRejectResultEnvelopeSchema)
     def post(self, data):

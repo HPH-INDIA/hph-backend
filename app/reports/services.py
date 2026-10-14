@@ -16,7 +16,7 @@ from app.kairon.models import KaironChartRecord, KaironUploadBatch
 from app.kairon.production import unique_completed_production
 from app.login_hours.models import LoginHourRecord
 from app.manual_daily_records.models import ManualDailyRecord
-from app.manual_daily_records.productivity import combined_daily_target, foundation_targets_for
+from app.manual_daily_records.productivity import combined_daily_target, foundation_targets_for, duration_weighted_target, productive_hours
 from app.manual_daily_records.services import approve_record, manual_review_user_ids, reject_record
 from app.reports.models import OfficeHoliday
 from app.roles.models import Role, RoleType
@@ -301,6 +301,7 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
         ManualDailyRecord.user_id.in_(user_ids),
         ManualDailyRecord.record_date >= from_date,
         ManualDailyRecord.record_date <= to_date,
+        ManualDailyRecord.status != "rejected",
     ).all()
     manual_rows = [
         row for row in manual_rows if within_employment(row.user_id, row.record_date)
@@ -417,6 +418,13 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
                 if has_source_row
                 else None
             )
+            duration_based = manual is not None and manual.foundation_hours is not None
+            if duration_based:
+                available_hours = productive_hours(manual)
+                foundation_hours = min(Decimal(manual.foundation_hours), available_hours)
+                allocated_hours = (foundation_hours if program == "FOUNDATION" else
+                                   available_hours - foundation_hours if program == "PVP" else available_hours)
+                target_minutes = allocated_hours * 60
             main_rate = rule.daily_target if rule else None
             # Explicit snapshots preserve the historical choice made by the
             # target editor. Kairon-only rows use the effective dated rules.
@@ -432,6 +440,8 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
                     return main_rate
                 if program == "FOUNDATION":
                     return foundation_rate if foundation_rate is not None else main_rate
+                if duration_based:
+                    return duration_weighted_target(main_rate, foundation_rate, manual.foundation_hours, available_hours)
                 return combined_daily_target(pvp, foundation, main_rate, foundation_rate)
             daily_target = rate_for(manual.pvp_count, manual.foundation_count) if manual is not None else rate_for(
                 kairon_charts - kairon_foundation, kairon_foundation)
@@ -461,8 +471,9 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
                 total_adjusted_target += adjusted_target
             if kairon_adjusted_target is not None:
                 total_kairon_target += kairon_adjusted_target
-            if manual is not None and manual.adjusted_cpd is not None:
-                total_adjusted_cpd = (total_adjusted_cpd or Decimal("0")) + manual.adjusted_cpd
+            saved_adjusted_cpd = adjusted_target if duration_based and program is not None else manual.adjusted_cpd if manual is not None else None
+            if saved_adjusted_cpd is not None:
+                total_adjusted_cpd = (total_adjusted_cpd or Decimal("0")) + saved_adjusted_cpd
             if inside_minutes is not None:
                 total_inside_minutes += inside_minutes
                 login_days += 1
@@ -486,7 +497,7 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
                         "productive_minutes": productive_minutes,
                         "target_minutes": target_minutes,
                         "adjusted_target": adjusted_target,
-                        "adjusted_cpd": manual.adjusted_cpd if manual is not None else None,
+                        "adjusted_cpd": saved_adjusted_cpd,
                         "manual_efficiency_percent": manual_efficiency_percent,
                         "kairon_efficiency_percent": kairon_efficiency_percent,
                         "manual_cpd": manual_cpd,
@@ -564,7 +575,7 @@ def bulk_approve_manual_records(record_ids, reviewed_by_id):
     reviewable_user_ids = set(manual_review_user_ids(db.session.get(User, reviewed_by_id)))
     approved, skipped = [], []
     for record_id in record_ids:
-        record = db.session.get(ManualDailyRecord, record_id)
+        record = ManualDailyRecord.query.filter_by(id=record_id).with_for_update().first()
         if record is None or record.user_id not in reviewable_user_ids:
             skipped.append({"id": record_id, "reason": "Record not found."})
         elif record.status != "pending":
@@ -584,7 +595,7 @@ def bulk_reject_manual_records(items, reviewed_by_id):
     reviewable_user_ids = set(manual_review_user_ids(db.session.get(User, reviewed_by_id)))
     rejected, skipped = [], []
     for item in items:
-        record = db.session.get(ManualDailyRecord, item["id"])
+        record = ManualDailyRecord.query.filter_by(id=item["id"]).with_for_update().first()
         if record is None or record.user_id not in reviewable_user_ids:
             skipped.append({"id": item["id"], "reason": "Record not found."})
         elif record.status != "pending":
@@ -970,6 +981,7 @@ def get_coding_dashboard(from_date, to_date, program=None, lead_id=None, cohort_
                 ManualDailyRecord.record_date <= User.last_working_day,
             ),
             ManualDailyRecord.user_id.in_(user_ids),
+            ManualDailyRecord.status != "rejected",
         )
         .group_by(ManualDailyRecord.user_id)
         .all()

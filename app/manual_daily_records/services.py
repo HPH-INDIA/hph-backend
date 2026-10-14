@@ -53,10 +53,14 @@ _ENTRY_FIELDS = (
 
 
 def manual_review_user_ids(reviewer):
-    """Review own and currently covered employees, never another lead's records."""
-    if reviewer is None or reviewer.role.role_type.code != "lead":
+    """Leads review own/covered coders; managers review their scoped team."""
+    if reviewer is None:
         return []
-    return report_team_user_ids(reviewer, include_leads=False)
+    if reviewer.role.role_type.code == "manager":
+        return manager_team_user_ids(reviewer.id)
+    if reviewer.role.role_type.code == "lead":
+        return report_team_user_ids(reviewer, include_leads=False)
+    return []
 
 
 def scope_manual_records(query, viewer):
@@ -251,6 +255,7 @@ def import_manual_daily_records(file_base64, source_filename, record_date, uploa
 
         record.pvp_count = data["production_count"]
         record.foundation_count = 0
+        record.foundation_hours = None
         record.production_count = data["production_count"]
         previous_meeting_hours = record.meeting_engagement_hours if record.id is not None else None
         for field in _ENTRY_FIELDS:
@@ -371,6 +376,7 @@ def process_manual_import_chunk(batch_id, chunk_number, checksum, rows, uploaded
 
         record.pvp_count = row["production_count"]
         record.foundation_count = 0
+        record.foundation_hours = None
         record.production_count = row["production_count"]
         previous_meeting_hours = record.meeting_engagement_hours if record.id is not None else None
         for field in _ENTRY_FIELDS:
@@ -427,7 +433,10 @@ def upsert_own_record(user_id, data):
     Employee edits reset the record to Pending and clear prior review.
     Lead entries are automatically approved on both creation and edit.
     """
-    record = ManualDailyRecord.query.filter_by(user_id=user_id, record_date=data["record_date"]).first()
+    record = ManualDailyRecord.query.filter_by(user_id=user_id, record_date=data["record_date"]).with_for_update().first()
+    owner = db.session.get(User, user_id)
+    if record is not None and owner.role.role_type.code == "employee" and record.status == "approved":
+        abort(409, message="Approved records cannot be edited. Only pending or rejected records can be resubmitted.")
     if record is None:
         record = ManualDailyRecord(user_id=user_id, record_date=data["record_date"])
         db.session.add(record)
@@ -439,6 +448,7 @@ def upsert_own_record(user_id, data):
     record.pvp_count = pvp_count or 0
     record.foundation_count = foundation_count or 0
     record.production_count = record.pvp_count + record.foundation_count
+    record.foundation_hours = data.get("foundation_hours")
 
     previous_meeting_hours = record.meeting_engagement_hours if record.id is not None else None
     for field in _ENTRY_FIELDS:

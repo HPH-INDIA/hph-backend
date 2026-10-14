@@ -27,6 +27,7 @@ class ManualDailyRecordUpsertSchema(Schema):
     foundation_count = fields.Integer(
         load_default=None, allow_none=True, validate=validate.Range(min=0), data_key="foundationCount"
     )
+    foundation_hours = _hour_field(load_default=None, allow_none=True, data_key="foundationHours")
     # Temporary compatibility for older clients. New clients submit the two
     # program counts; the server always derives the total.
     production_count = fields.Integer(
@@ -61,6 +62,25 @@ class ManualDailyRecordUpsertSchema(Schema):
         data["foundation_count"] = foundation_count
         data["production_count"] = pvp_count + foundation_count
 
+        foundation_hours = data.get("foundation_hours")
+        mixed = pvp_count > 0 and foundation_count > 0
+        if mixed and (foundation_hours is None or foundation_hours <= 0):
+            raise ValidationError("Enter the hours worked on Foundation charts.", field_name="foundationHours")
+        if not mixed:
+            data["foundation_hours"] = foundation_hours = None
+        total_hours = sum((data.get(field) or Decimal("0") for field in (
+            "tech_issues_downtime_hours", "no_inventory_idle_time_hours", "leave_hours", "meeting_engagement_hours"
+        )), Decimal("0")) + (foundation_hours or Decimal("0"))
+        if total_hours > 10:
+            raise ValidationError("Total hours across Foundation, downtime, idle, leave and meetings cannot exceed 10.", field_name="hoursTotal")
+        if mixed:
+            meetings = data.get("meetings")
+            deducted_meetings = (sum((item["hours"] for item in meetings if item["type"] != "Huddle"), Decimal("0"))
+                if meetings is not None else Decimal("0") if data.get("meeting_type") == "Huddle" else data["meeting_engagement_hours"])
+            available = Decimal("8") - data["tech_issues_downtime_hours"] - data["no_inventory_idle_time_hours"] - data["leave_hours"] - deducted_meetings
+            if foundation_hours >= available:
+                raise ValidationError("Foundation hours must leave some productive time for PVP in the 8-hour workday.", field_name="foundationHours")
+
         if "meetings" in data:
             meetings = data["meetings"]
             total = sum((meeting["hours"] for meeting in meetings), Decimal("0"))
@@ -87,6 +107,7 @@ class ManualDailyRecordSchema(Schema):
     production_count = fields.Integer(dump_only=True, data_key="productionCount")
     pvp_count = fields.Integer(dump_only=True, data_key="pvpCount")
     foundation_count = fields.Integer(dump_only=True, data_key="foundationCount")
+    foundation_hours = fields.Decimal(dump_only=True, as_string=True, allow_none=True, places=2, data_key="foundationHours")
     tech_issues_downtime_hours = fields.Decimal(dump_only=True, as_string=True, data_key="techIssuesDowntimeHours")
     no_inventory_idle_time_hours = fields.Decimal(
         dump_only=True, as_string=True, data_key="noInventoryIdleTimeHours"
@@ -214,3 +235,8 @@ ManualBulkUploadEnvelopeSchema = envelope_schema(
 ManualImportProgressEnvelopeSchema = envelope_schema(
     "ManualImportProgressEnvelopeSchema", fields.Nested(ManualImportProgressSchema)
 )
+
+
+class DeleteManualRecordsSchema(Schema):
+    ids = fields.List(fields.Integer(validate=validate.Range(min=1)), required=True,
+                      validate=validate.Length(min=1, max=5000))

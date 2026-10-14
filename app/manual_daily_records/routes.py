@@ -4,9 +4,11 @@ from flask_smorest import abort
 
 from app.auth import require_feature, require_role, require_role_types
 from app.extensions import db
+from app.responses import MessageEnvelopeSchema
 from app.manual_daily_records import bp
 from app.manual_daily_records.models import ManualDailyRecord, ManualImportBatch
 from app.manual_daily_records.schemas import (
+    DeleteManualRecordsSchema,
     ManualDailyRecordEnvelopeSchema,
     ManualDailyRecordListEnvelopeSchema,
     ManualDailyRecordQuerySchema,
@@ -161,13 +163,13 @@ class ManualDailyRecordsImportComplete(MethodView):
 @bp.route("/manual-daily-records/<int:record_id>/approve")
 class ApproveManualDailyRecord(MethodView):
     @require_feature(REPORTS_FEATURE, access="write")
-    @require_role("lead")
+    @require_role_types("lead", "manager")
     @bp.response(200, ManualDailyRecordEnvelopeSchema)
     def post(self, record_id):
         record = ManualDailyRecord.query.filter(
             ManualDailyRecord.id == record_id,
             ManualDailyRecord.user_id.in_(manual_review_user_ids(g.user)),
-        ).first_or_404()
+        ).with_for_update().first_or_404()
         if record.status != "pending":
             abort(409, message="This record isn't pending review.")
 
@@ -179,17 +181,48 @@ class ApproveManualDailyRecord(MethodView):
 @bp.route("/manual-daily-records/<int:record_id>/reject")
 class RejectManualDailyRecord(MethodView):
     @require_feature(REPORTS_FEATURE, access="write")
-    @require_role("lead")
+    @require_role_types("lead", "manager")
     @bp.arguments(RejectManualDailyRecordSchema)
     @bp.response(200, ManualDailyRecordEnvelopeSchema)
     def post(self, data, record_id):
         record = ManualDailyRecord.query.filter(
             ManualDailyRecord.id == record_id,
             ManualDailyRecord.user_id.in_(manual_review_user_ids(g.user)),
-        ).first_or_404()
+        ).with_for_update().first_or_404()
         if record.status != "pending":
             abort(409, message="This record isn't pending review.")
 
         reject_record(record, g.user.id, data.get("reason"))
         db.session.commit()
         return {"status": 200, "message": "Manual daily record rejected successfully.", "data": record}
+
+
+@bp.route("/manual-daily-records/<int:record_id>")
+class ManualDailyRecordDelete(MethodView):
+    @require_feature(REPORTS_FEATURE, access="write")
+    @require_role_types("employee", "manager")
+    @bp.response(200, MessageEnvelopeSchema)
+    def delete(self, record_id):
+        record = scope_manual_records(ManualDailyRecord.query, g.user).filter_by(id=record_id).with_for_update().first_or_404()
+        if g.user.role.role_type.code == "employee" and record.status != "pending":
+            abort(409, message="Only pending records can be deleted by their coder.")
+        db.session.delete(record)
+        db.session.commit()
+        return {"status": 200, "message": "Manual record deleted.", "data": {"deleted": [record_id]}}
+
+
+@bp.route("/manual-daily-records/bulk-delete")
+class ManualDailyRecordsBulkDelete(MethodView):
+    @require_feature(REPORTS_FEATURE, access="write")
+    @require_role("manager")
+    @bp.arguments(DeleteManualRecordsSchema)
+    @bp.response(200, MessageEnvelopeSchema)
+    def post(self, data):
+        ids = set(data["ids"])
+        records = scope_manual_records(ManualDailyRecord.query, g.user).filter(ManualDailyRecord.id.in_(ids)).order_by(ManualDailyRecord.id).with_for_update().all()
+        if len(records) != len(ids):
+            abort(404, message="One or more selected records are unavailable. Refresh before deleting.")
+        for record in records:
+            db.session.delete(record)
+        db.session.commit()
+        return {"status": 200, "message": "Selected manual records deleted.", "data": {"deleted": sorted(ids)}}

@@ -97,6 +97,7 @@ def _body(**overrides):
         "date": DAY.isoformat(),
         "pvpCount": 8,
         "foundationCount": 4,
+        "foundationHours": 2,
         "techIssuesDowntimeHours": 0,
         "noInventoryIdleTimeHours": 0,
         "leaveHours": 0,
@@ -120,7 +121,7 @@ def _assert_pending(records):
         assert record.reviewed_at is None
 
 
-def test_employee_submission_and_edit_require_fresh_lead_review(api_client, manual_team):
+def test_employee_rejected_submission_and_edit_require_fresh_lead_review(api_client, manual_team):
     users, _ = manual_team
     _login(api_client, users["coder"])
     status, body = api_client.post("/api/manual-daily-records", _body(meetingType="Training"))
@@ -131,7 +132,7 @@ def test_employee_submission_and_edit_require_fresh_lead_review(api_client, manu
     assert row["reviewedAt"] is None
 
     _login(api_client, users["lead"])
-    status, body = api_client.post(f"/api/manual-daily-records/{row['id']}/approve")
+    status, body = api_client.post(f"/api/manual-daily-records/{row['id']}/reject")
     assert status == 200, body
 
     _login(api_client, users["coder"])
@@ -201,7 +202,7 @@ def test_direct_lead_can_review_employee_once(api_client, manual_team, action, e
 
 @pytest.mark.parametrize("action", ["approve", "reject"])
 @pytest.mark.parametrize("actor", ["manager", "coder", "sibling-lead", "outside-lead"])
-def test_individual_review_rejects_everyone_except_direct_lead(api_client, manual_team, action, actor):
+def test_individual_review_allows_manager_and_direct_lead_only(api_client, manual_team, action, actor):
     users, _ = manual_team
     record = _record(users["coder"])
     _login(api_client, users[actor])
@@ -210,8 +211,9 @@ def test_individual_review_rejects_everyone_except_direct_lead(api_client, manua
         f"/api/manual-daily-records/{record.id}/{action}",
         {"reason": "Check hours"} if action == "reject" else None,
     )
-    assert status == (403 if actor in {"manager", "coder"} else 404), body
-    _assert_pending([record])
+    assert status == (200 if actor == "manager" else 403 if actor == "coder" else 404), body
+    if actor != "manager":
+        _assert_pending([record])
 
 
 @pytest.mark.parametrize("action", ["approve", "reject"])
@@ -233,7 +235,7 @@ def test_lead_cannot_review_own_or_another_leads_historical_pending_row(api_clie
 
 @pytest.mark.parametrize("action", ["approve", "reject"])
 @pytest.mark.parametrize("actor", ["manager", "coder"])
-def test_bulk_review_rejects_manager_and_employee_roles(api_client, manual_team, action, actor):
+def test_bulk_review_allows_manager_but_rejects_employee_roles(api_client, manual_team, action, actor):
     users, _ = manual_team
     record = _record(users["coder"])
     _login(api_client, users[actor])
@@ -241,8 +243,9 @@ def test_bulk_review_rejects_manager_and_employee_roles(api_client, manual_team,
     status, body = api_client.post(
         f"/api/reports/manual/reviews/bulk-{action}", _bulk_body(action, [record])
     )
-    assert status == 403, body
-    _assert_pending([record])
+    assert status == (200 if actor == "manager" else 403), body
+    if actor != "manager":
+        _assert_pending([record])
 
 
 @pytest.mark.parametrize("action,result_key", [("approve", "approved"), ("reject", "rejected")])

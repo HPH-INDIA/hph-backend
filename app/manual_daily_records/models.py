@@ -11,10 +11,9 @@ from app.extensions import db
 VALID_STATUSES = ("pending", "approved", "rejected")
 VALID_MEETING_TYPES = ("Assessment", "One-O-One", "Meeting", "Training", "Huddle", "PKT", "Others")
 
-# Each of the four hour fields is independently capped at 10 - chosen to
-# comfortably cover a long working day while still catching a
-# minutes/hours mix-up (e.g. "40" for a single day). They are not required
-# to sum to any particular total.
+# Individual fields are capped at 10; new self-entry submissions also
+# validate their combined total (including Foundation work) against 10.
+# Historical/imported records keep their original time values.
 MAX_HOURS_PER_FIELD = 10
 
 
@@ -29,6 +28,7 @@ class ManualDailyRecord(db.Model):
         db.CheckConstraint("production_count >= 0", name="ck_manual_daily_records_production_count"),
         db.CheckConstraint("pvp_count >= 0", name="ck_manual_daily_records_pvp_count"),
         db.CheckConstraint("foundation_count >= 0", name="ck_manual_daily_records_foundation_count"),
+        db.CheckConstraint("foundation_hours >= 0 AND foundation_hours <= 10", name="ck_manual_daily_records_foundation_hours"),
         db.CheckConstraint(
             f"tech_issues_downtime_hours >= 0 AND tech_issues_downtime_hours <= {MAX_HOURS_PER_FIELD}",
             name="ck_manual_daily_records_tech_issues_downtime_hours",
@@ -59,6 +59,8 @@ class ManualDailyRecord(db.Model):
     production_count = db.Column(db.Integer, nullable=False)
     pvp_count = db.Column(db.Integer, nullable=False, default=0)
     foundation_count = db.Column(db.Integer, nullable=False, default=0)
+    # Null preserves the chart-mix calculation for historical/imported rows.
+    foundation_hours = db.Column(db.Numeric(4, 2), nullable=True)
     tech_issues_downtime_hours = db.Column(db.Numeric(4, 2), nullable=False, default=0)
     no_inventory_idle_time_hours = db.Column(db.Numeric(4, 2), nullable=False, default=0)
     leave_hours = db.Column(db.Numeric(4, 2), nullable=False, default=0)

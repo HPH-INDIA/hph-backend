@@ -132,3 +132,57 @@ def test_kairon_and_manual_mixes_use_their_own_capacity(manager_user,employee_us
     foundation=get_efficiency([employee_user.id],TODAY,TODAY,include_daily=True,program='FOUNDATION')[employee_user.id]['daily'][0]
     assert foundation['daily_target']==7
     assert foundation['manual_efficiency_percent']==foundation['kairon_efficiency_percent']
+
+
+@pytest.mark.parametrize("meeting_hours,expected_target,expected_adjusted,expected_minutes", [
+    (0, Decimal("24.250000"), Decimal("24.25"), 480),
+    (1, Decimal("23.428571"), Decimal("20.50"), 420),
+])
+def test_time_weighted_mixed_capacity(employee_user, meeting_hours, expected_target, expected_adjusted, expected_minutes):
+    records = mixed_records(employee_user)
+    record = records[1]
+    record.pvp_count, record.foundation_count, record.production_count = 14, 5, 19
+    record.foundation_hours = Decimal("2")
+    record.tech_issues_downtime_hours = record.no_inventory_idle_time_hours = record.leave_hours = 0
+    record.meetings = [{"type": "Meeting", "hours": meeting_hours}] if meeting_hours else []
+    record.meeting_engagement_hours = meeting_hours
+    snapshot_manual_productivity([record])
+    db.session.commit()
+    assert record.daily_target == expected_target
+    assert record.adjusted_cpd == expected_adjusted
+    daily = get_efficiency([employee_user.id], TODAY, TODAY, include_daily=True)[employee_user.id]["daily"][0]
+    assert daily["daily_target"] == expected_target
+    assert daily["adjusted_target"] == expected_adjusted
+    assert daily["adjusted_cpd"] == expected_adjusted
+    assert daily["target_minutes"] == expected_minutes
+    foundation = get_efficiency([employee_user.id], TODAY, TODAY, include_daily=True, program="FOUNDATION")[employee_user.id]["daily"][0]
+    assert foundation["target_minutes"] == 120
+    assert foundation["adjusted_target"] == Decimal("1.75")
+    assert foundation["manual_cpd"] == Decimal("20.0")
+    pvp = get_efficiency([employee_user.id], TODAY, TODAY, include_daily=True, program="PVP")[employee_user.id]["daily"][0]
+    assert pvp["target_minutes"] == expected_minutes - 120
+
+
+def test_duration_weighting_does_not_depend_on_completed_chart_mix(employee_user):
+    records = mixed_records(employee_user)
+    record = records[1]
+    record.foundation_hours = Decimal("2")
+    snapshot_manual_productivity([record])
+    target, adjusted = record.daily_target, record.adjusted_cpd
+    record.pvp_count, record.foundation_count, record.production_count = 14, 5, 19
+    snapshot_manual_productivity([record])
+    assert record.daily_target == target and record.adjusted_cpd == adjusted
+
+
+def test_fractional_hours_keep_adjusted_target_consistent_with_snapshot(employee_user):
+    records = mixed_records(employee_user)
+    record = records[1]
+    record.foundation_hours = Decimal("2")
+    record.tech_issues_downtime_hours = Decimal("0.01")
+    record.no_inventory_idle_time_hours = record.leave_hours = record.meeting_engagement_hours = 0
+    record.meetings = []
+    snapshot_manual_productivity([record])
+    db.session.commit()
+    daily = get_efficiency([employee_user.id], TODAY, TODAY, include_daily=True)[employee_user.id]["daily"][0]
+    assert daily["target_minutes"] == Decimal("479.4")
+    assert daily["adjusted_target"] == record.adjusted_cpd == Decimal("24.21")
