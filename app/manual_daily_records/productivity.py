@@ -60,7 +60,7 @@ def combined_daily_target(pvp_count, foundation_count, main_target, foundation_t
 
 
 def foundation_targets_for(records):
-    """Resolve all date-specific Foundation rates in a constant query count."""
+    """Resolve dated Foundation rates, using W1 before Foundation starts."""
     from app.cohorts.models import FoundationTargetRule, UserStageEvidence
     from app.cohorts.progression import foundation_progress
     from app.users.models import User
@@ -81,6 +81,11 @@ def foundation_targets_for(records):
                                    ev.first_foundation_completed if ev else None,
                                    record.record_date, departures.get(record.user_id),
                                    changes=changes.get(record.user_id, []))["current_stage"]
+        # Manual charts do not start the Kairon-driven stage timeline, but
+        # Foundation work before that timeline starts still uses the W1 rate.
+        last_day = departures.get(record.user_id)
+        if code is None and (last_day is None or record.record_date <= last_day):
+            code = "W1"
         targets[record.id] = next((rule.daily_target for rule in rules
                                    if rule.stage_code == code and rule.effective_from <= record.record_date
                                    and (rule.effective_to is None or record.record_date < rule.effective_to)), None)
