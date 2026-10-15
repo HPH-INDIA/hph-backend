@@ -222,3 +222,26 @@ def test_rejected_manual_records_leave_calculations_but_remain_in_history(team, 
     assert Decimal(card["manual"]["meetingEngagementHours"]) == 0
     assert card["manual"]["recordCount"] == 0
     assert card["efficiency"]["manualCharts"] == 0
+
+
+def test_program_breakdowns_follow_scope_daily_rollup_and_goals(team, api_client):
+    from app.manual_daily_records.models import ManualDailyRecord
+    from app.reports.services import get_efficiency
+    qa, a, b, outsider = team
+    record = ManualDailyRecord.query.filter_by(user_id=a.id, record_date=DAY).one()
+    record.pvp_count, record.foundation_count = 20, 10
+    chart = KaironChartRecord.query.filter_by(user_id=a.id).first()
+    chart.program = "FOUNDATION"
+    db.session.commit()
+    api_client.login(qa.email, "test-password")
+    status, response = api_client.get(f"/api/dashboards/lead?date={DAY}&coderId={a.id}")
+    assert status == 200
+    section = response["data"]["coders"]
+    expected = dict(kaironPvpCount=1, kaironFoundationCount=1, manualPvpCount=20, manualFoundationCount=10)
+    for values in (section["efficiency"], section["efficiency"]["daily"][0], section["goal"], section["goal"]["users"][0]):
+        assert {key: values[key] for key in expected} == expected
+    only_pvp = get_efficiency([a.id], DAY, DAY, program="PVP")[a.id]
+    assert only_pvp["kairon_pvp_count"] == 1
+    assert only_pvp["kairon_foundation_count"] == 0
+    assert only_pvp["manual_pvp_count"] == 20
+    assert only_pvp["manual_foundation_count"] == 0

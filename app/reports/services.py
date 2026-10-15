@@ -188,9 +188,12 @@ def get_period_goal(members, from_date, to_date, scope="team", program=None, lev
     completed_charts = 0
     completed_by_user = {}
     manual_by_user = {}
+    program_by_user = {}
     if member_ids and completed_through >= from_date:
-        completed_by_user = dict(
-            db.session.query(KaironChartRecord.user_id, func.count(KaironChartRecord.id))
+        completed_rows = (
+            db.session.query(KaironChartRecord.user_id, func.count(KaironChartRecord.id),
+                func.sum(case((func.upper(KaironChartRecord.program) == "PVP", 1), else_=0)),
+                func.sum(case((func.upper(KaironChartRecord.program) == "FOUNDATION", 1), else_=0)))
             .join(KaironUploadBatch, KaironChartRecord.batch_id == KaironUploadBatch.id)
             .join(User, KaironChartRecord.user_id == User.id)
             .filter(
@@ -210,10 +213,13 @@ def get_period_goal(members, from_date, to_date, scope="team", program=None, lev
             .group_by(KaironChartRecord.user_id)
             .all()
         )
+        completed_by_user = {uid: count for uid, count, pvp, foundation in completed_rows}
+        program_by_user = {uid: {"kairon_pvp_count": pvp, "kairon_foundation_count": foundation} for uid, count, pvp, foundation in completed_rows}
         completed_charts = sum(completed_by_user.values())
-        manual_by_user = dict(
+        manual_count_rows = (
             db.session.query(ManualDailyRecord.user_id, func.sum(ManualDailyRecord.pvp_count if program == "PVP" else
-                ManualDailyRecord.foundation_count if program == "FOUNDATION" else ManualDailyRecord.production_count))
+                ManualDailyRecord.foundation_count if program == "FOUNDATION" else ManualDailyRecord.production_count),
+                func.sum(ManualDailyRecord.pvp_count), func.sum(ManualDailyRecord.foundation_count))
             .join(User, ManualDailyRecord.user_id == User.id)
             .filter(
                 ManualDailyRecord.user_id.in_(member_ids),
@@ -225,6 +231,12 @@ def get_period_goal(members, from_date, to_date, scope="team", program=None, lev
             .group_by(ManualDailyRecord.user_id)
             .all()
         )
+
+        manual_by_user = {uid: count for uid, count, pvp, foundation in manual_count_rows}
+        for uid, count, pvp, foundation in manual_count_rows:
+            program_by_user.setdefault(uid, {}).update(manual_pvp_count=pvp if program != "FOUNDATION" else 0,
+                manual_foundation_count=foundation if program != "PVP" else 0)
+    count_keys = ("kairon_pvp_count", "kairon_foundation_count", "manual_pvp_count", "manual_foundation_count")
 
     calendar_working_days = sum(
         1
@@ -239,6 +251,7 @@ def get_period_goal(members, from_date, to_date, scope="team", program=None, lev
         "scope": scope,
         "user_count": len(members),
         "completed_charts": completed_charts,
+        **{key: sum(row.get(key, 0) for row in program_by_user.values()) for key in count_keys},
         "manual_charts": sum(manual_by_user.values()),
         "adjusted_target_charts": sum(adjusted_targets_by_user.values(), Decimal("0.00")),
         "adjusted_difference": sum(adjusted_targets_by_user.values(), Decimal("0.00"))
@@ -246,6 +259,7 @@ def get_period_goal(members, from_date, to_date, scope="team", program=None, lev
         "users": [
             {
                 "user_id": member.id,
+                **{key: program_by_user.get(member.id, {}).get(key, 0) for key in count_keys},
                 "name": f"{member.first_name} {member.last_name}".strip(),
                 "manual_charts": manual_by_user.get(member.id, 0),
                 "completed_charts": completed_by_user.get(member.id, 0),
@@ -312,6 +326,7 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
             KaironChartRecord.completed_date,
             func.count(KaironChartRecord.id),
             func.sum(case((func.upper(KaironChartRecord.program) == "FOUNDATION", 1), else_=0)),
+            func.sum(case((func.upper(KaironChartRecord.program) == "PVP", 1), else_=0)),
         )
         .join(KaironUploadBatch, KaironChartRecord.batch_id == KaironUploadBatch.id)
         .join(User, KaironChartRecord.user_id == User.id)
@@ -347,8 +362,9 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
 
     login_by_key = {(row.user_id, row.attendance_date): row for row in login_rows}
     manual_by_key = {(row.user_id, row.record_date): row for row in manual_rows}
-    kairon_by_key = {(uid, day): count for uid, day, count, foundation_count in kairon_rows}
-    kairon_foundation_by_key = {(uid, day): foundation_count for uid, day, count, foundation_count in kairon_rows}
+    kairon_by_key = {(uid, day): count for uid, day, count, foundation_count, pvp_count in kairon_rows}
+    kairon_pvp_by_key = {(uid, day): pvp_count for uid, day, count, foundation_count, pvp_count in kairon_rows}
+    kairon_foundation_by_key = {(uid, day): foundation_count for uid, day, count, foundation_count, pvp_count in kairon_rows}
     periods_by_user = {}
     for period in periods:
         periods_by_user.setdefault(period.user_id, []).append(period)
@@ -364,6 +380,7 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
     for user_id in user_ids:
         dates = sorted((day for uid, day in all_keys if uid == user_id), reverse=True)
         daily = []
+        total_program_counts = dict.fromkeys(("kairon_pvp_count", "kairon_foundation_count", "manual_pvp_count", "manual_foundation_count"), 0)
         total_manual_charts = 0
         total_kairon_charts = 0
         total_adjusted_target = Decimal("0")
@@ -435,6 +452,12 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
             manual_charts = _manual_count(manual, program)
             kairon_charts = kairon_by_key.get((user_id, work_date), 0)
             kairon_foundation = kairon_foundation_by_key.get((user_id, work_date), 0)
+            program_counts = {
+                "kairon_pvp_count": kairon_pvp_by_key.get((user_id, work_date), 0),
+                "kairon_foundation_count": kairon_foundation,
+                "manual_pvp_count": _manual_count(manual, "PVP") if program != "FOUNDATION" else 0,
+                "manual_foundation_count": _manual_count(manual, "FOUNDATION") if program != "PVP" else 0,
+            }
             def rate_for(pvp, foundation):
                 if program == "PVP":
                     return main_rate
@@ -463,6 +486,8 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
             target_cpd = _cpd(adjusted_target, target_minutes) if adjusted_target is not None else None
 
             if has_source_row:
+                for key, count in program_counts.items():
+                    total_program_counts[key] += count
                 total_manual_charts += manual_charts
                 total_kairon_charts += kairon_charts
                 total_target_minutes += target_minutes
@@ -486,6 +511,7 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
                         "date": work_date,
                         "stage": period.stage_code if period else None,
                         "daily_target": daily_target,
+                        **program_counts,
                         "manual_charts": manual_charts,
                         "kairon_charts": kairon_charts,
                         "inside_minutes": inside_minutes,
@@ -510,6 +536,7 @@ def get_efficiency(user_ids, from_date, to_date, include_daily=False, program=No
         results[user_id] = {
             "from_date": from_date,
             "to_date": to_date,
+            **total_program_counts,
             "manual_charts": total_manual_charts,
             "kairon_charts": total_kairon_charts,
             "adjusted_target": total_adjusted_target.quantize(Decimal("0.01")),

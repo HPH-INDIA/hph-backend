@@ -38,7 +38,7 @@ def get_client_dashboard(client, from_date, to_date, goal_to_date=None, program=
     # values once and recompute weighted rates from the raw source denominators.
     qa_goal, coder_goal = result["qa"]["goal"], result["coders"]["goal"]
     combined_goal = {**qa_goal, "scope": "project", "users": [*qa_goal["users"], *coder_goal["users"]]}
-    for key in ("user_count", "manual_charts", "completed_charts", "target_charts", "difference",
+    for key in ("kairon_pvp_count", "kairon_foundation_count", "manual_pvp_count", "manual_foundation_count", "user_count", "manual_charts", "completed_charts", "target_charts", "difference",
                 "eligible_days", "leave_days_excluded"):
         combined_goal[key] = qa_goal[key] + coder_goal[key]
     for key in ("adjusted_target_charts", "adjusted_difference"):
