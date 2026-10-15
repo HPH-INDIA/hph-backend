@@ -207,3 +207,98 @@ def test_imports_snapshot_after_stage_updates_and_preserve_unchanged_rows(
     submit(1.5, "c")
     assert record.daily_target == 40
     assert record.adjusted_cpd == Decimal("20.00")
+
+
+@pytest.mark.parametrize("foundation_start", [None, DAY + dt.timedelta(days=1)])
+@pytest.mark.parametrize("pvp_count,foundation_hours,expected", [
+    (0, None, Decimal("9.00")),
+    (14, 2, Decimal("24.75")),
+])
+def test_manual_foundation_before_start_uses_dated_w1_target(
+        api_client, employee_user, foundation_start, pvp_count, foundation_hours, expected):
+    from app.cohorts.models import FoundationTargetRule, UserStageEvidence
+    from app.cohorts.progression import foundation_progress
+
+    _period(employee_user)
+    # Use the entry date's rule rather than a hardcoded or current W1 target.
+    FoundationTargetRule.query.filter_by(stage_code="W1").one().effective_to = DAY
+    db.session.add_all([
+        FoundationTargetRule(stage_code="W1", effective_from=DAY,
+                             effective_to=DAY + dt.timedelta(days=1), daily_target=9),
+        FoundationTargetRule(stage_code="W1", effective_from=DAY + dt.timedelta(days=1), daily_target=12),
+    ])
+    if foundation_start:
+        db.session.add(UserStageEvidence(user_id=employee_user.id,
+                                         first_completed=foundation_start,
+                                         first_foundation_completed=foundation_start))
+    db.session.commit()
+    assert foundation_progress(None, foundation_start, DAY)["current_stage"] is None
+    api_client.login(employee_user.email, "test-password")
+    payload = dict(date=DAY.isoformat(), pvpCount=pvp_count, foundationCount=5,
+                   techIssuesDowntimeHours=0, noInventoryIdleTimeHours=0,
+                   leaveHours=0, meetingEngagementHours=0)
+    if foundation_hours is not None:
+        payload["foundationHours"] = foundation_hours
+    status, response = api_client.post("/api/manual-daily-records", payload)
+    assert status == 200, response
+    saved = response["data"]
+    assert saved["pvpDailyTarget"] == 30
+    assert saved["foundationDailyTarget"] == 9
+    assert Decimal(str(saved["dailyTarget"])) == expected
+    assert Decimal(saved["adjustedCpd"]) == expected
+    evidence = db.session.get(UserStageEvidence, employee_user.id)
+    assert (evidence.first_foundation_completed if evidence else None) == foundation_start
+    assert foundation_progress(None, foundation_start, DAY)["current_stage"] is None
+
+
+def test_manual_foundation_without_substage_uses_w1_for_screenshot_allocation(
+        api_client, employee_user):
+    from app.cohorts.models import UserStageEvidence
+    _period(employee_user)
+    api_client.login(employee_user.email, "test-password")
+    status, response = api_client.post("/api/manual-daily-records", dict(
+        date=DAY.isoformat(), pvpCount=15, foundationCount=4, foundationHours=5,
+        techIssuesDowntimeHours=0, noInventoryIdleTimeHours=0,
+        leaveHours=0, meetingEngagementHours=0,
+    ))
+    assert status == 200, response
+    saved = response["data"]
+    assert saved["pvpDailyTarget"] == 30
+    assert saved["foundationDailyTarget"] == 7
+    assert Decimal(str(saved["dailyTarget"])) == Decimal("15.625000")
+    assert Decimal(saved["adjustedCpd"]) == Decimal("15.63")
+    evidence = db.session.get(UserStageEvidence, employee_user.id)
+    assert evidence is None or evidence.first_foundation_completed is None
+
+
+def test_manual_foundation_w1_fallback_does_not_replace_assigned_stage(employee_user):
+    from app.cohorts.models import UserStageEvidence
+    _period(employee_user)
+    db.session.add(UserStageEvidence(user_id=employee_user.id,
+                                     first_foundation_completed=DAY - dt.timedelta(days=7)))
+    record = ManualDailyRecord(user_id=employee_user.id, **_entry(
+        pvp_count=15, foundation_count=4, foundation_hours=5,
+        tech_issues_downtime_hours=0, no_inventory_idle_time_hours=0,
+        leave_hours=0, meeting_engagement_hours=0,
+    ))
+    db.session.add(record)
+    productivity.snapshot_manual_productivity([record])
+    db.session.commit()
+    assert record.foundation_daily_target == 14  # W2, rather than W1 or Main.
+    assert record.adjusted_cpd == Decimal("20.00")
+
+
+def test_manual_foundation_w1_fallback_respects_last_working_day(employee_user):
+    previous_last_day = employee_user.last_working_day
+    employee_user.last_working_day = DAY - dt.timedelta(days=1)
+    db.session.commit()
+    record = ManualDailyRecord(user_id=employee_user.id, **_entry(
+        pvp_count=0, foundation_count=5,
+    ))
+    db.session.add(record)
+    db.session.flush()
+    try:
+        assert productivity.foundation_targets_for([record])[record.id] is None
+    finally:
+        employee_user.last_working_day = previous_last_day
+        db.session.commit()
