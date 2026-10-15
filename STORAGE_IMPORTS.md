@@ -51,6 +51,15 @@ Each line is base64 of `12-byte nonce || AES-256-GCM ciphertext+tag`, containing
 
 ## Verification
 
+Kairon exports now support `Last Hold Reason` and `Held On` after `Last Action`.
+The browser maps them by header name to `lastHoldReason` and `heldOn`, normalizes
+the date to ISO format, and passes them through the encrypted import. Both fields
+are stored only while the chart is On Hold and returned by chart APIs. Imports
+clear both values when the chart leaves hold. Older exports may omit these
+columns and preserve existing metadata on held charts; blank cells in present columns clear
+the corresponding values. Apply migration `b2a6f3d8c915` and deploy the API/worker
+before deploying the updated frontend. Hold age and TAT calculations are unchanged.
+
 `tests/test_storage_imports.py` uses real local PostgreSQL, mocking only Storage network operations: 50,000 records, manual processing, permission/ownership checks, upload slots, callbacks, corruption, all-block validation, recovery, and worker exclusion. Existing Kairon/manual tests are also run.
 
 Frontend tests verify orchestration, response loss, retained ciphertext, logout cancellation, login recovery, authenticated encryption, and TUS resumption. A live Supabase smoke upload is still required after credentials and bucket configuration; local tests cannot verify provider credentials or CORS.

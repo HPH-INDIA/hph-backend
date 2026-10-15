@@ -40,7 +40,7 @@ class KaironChartRowSchema(Schema):
     """One row of the upload payload - exactly the columns the reference
     template offers (see services.TEMPLATE_COLUMNS) and nothing else.
     Field order here mirrors the template one-for-one: Program, Level,
-    Status, Coding Analyst, Actions, Last Action, Created, Completed,
+    Status, Coding Analyst, Actions, Last Action, Last Hold Reason, Held On, Created, Completed,
     TAT, Age, Practice. Patient and MBI have no field - see the module
     note above.
     """
@@ -56,6 +56,8 @@ class KaironChartRowSchema(Schema):
     )
     actions = fields.Integer(required=True, validate=validate.Range(min=0))
     last_action = fields.String(required=True, allow_none=True, data_key="lastAction")
+    last_hold_reason = fields.String(allow_none=True, data_key="lastHoldReason")
+    held_on = fields.Date(allow_none=True, data_key="heldOn")
     created_date = fields.Date(required=True, data_key="created")
     completed_date = fields.Date(required=True, allow_none=True, data_key="completed")
     tat_days = fields.Integer(required=True, allow_none=True, data_key="tat")
@@ -130,6 +132,8 @@ class KaironChartRecordSchema(Schema):
     coding_analyst = fields.String(dump_only=True, attribute="coding_analyst_raw", data_key="codingAnalyst")
     actions = fields.Integer(dump_only=True)
     last_action = fields.String(dump_only=True, allow_none=True, data_key="lastAction")
+    last_hold_reason = fields.String(dump_only=True, allow_none=True, data_key="lastHoldReason")
+    held_on = fields.Date(dump_only=True, allow_none=True, data_key="heldOn")
     created_date = fields.Date(dump_only=True, data_key="created")
     completed_date = fields.Date(dump_only=True, allow_none=True, data_key="completed")
     tat_days = fields.Integer(dump_only=True, allow_none=True, data_key="tat")

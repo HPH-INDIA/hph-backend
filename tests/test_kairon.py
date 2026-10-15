@@ -100,7 +100,7 @@ def test_upload_template_offers_mbi_but_never_patient():
     columns = header.split(",")
     assert columns == [
         "MBI", "Program", "Level", "Status", "Coding Analyst", "Actions",
-        "Last Action", "Created", "Completed", "TAT", "Age", "Practice",
+        "Last Action", "Last Hold Reason", "Held On", "Created", "Completed", "TAT", "Age", "Practice",
     ]
     assert "patient" not in header.lower()
     assert "MBI" in columns
@@ -332,3 +332,62 @@ def test_cumulative_chunk_updates_new_duplicate_identity_and_preserves_history(a
     assert KaironChartRecord.query.count() == 1
     assert KaironChartHistory.query.count() == 2
     assert KaironImportChunk.query.filter_by(batch_id=import_id).count() == 1
+
+
+def test_hold_metadata_round_trip_updates_and_legacy_preservation():
+    from app.kairon.schemas import KaironChartRecordSchema, KaironImportRowSchema
+
+    _get_or_create_user("charishma.sonani@example.com", "Charishma", "Sonani", "TEST-CHARISHMA")
+    schema = KaironImportRowSchema()
+    raw = _sample_row(mbi="SYNTHETIC-HOLD", status="On Hold", completed=None,
+                      lastHoldReason="No records available", heldOn="2026-10-14")
+
+    def upload(values):
+        batch = start_cumulative_import("holds.csv", "a" * 64, 1, _first_superadmin_id())
+        batch, _ = process_import_chunk(batch.id, 0, "b" * 64, [schema.load(values)])
+        return batch
+
+    assert upload(raw).inserted_count == 1
+    record = KaironChartRecord.query.one()
+    dumped = KaironChartRecordSchema().dump(record)
+    assert dumped["lastHoldReason"] == "No records available"
+    assert dumped["heldOn"] == "2026-10-14"
+    assert upload(raw).unchanged_count == 1
+    raw["lastHoldReason"] = "Awaiting access"
+    raw["heldOn"] = "2026-10-15"
+    assert upload(raw).updated_count == 1
+    assert KaironChartRecord.query.count() == 1
+    assert record.last_hold_reason == "Awaiting access"
+    assert record.held_on == dt.date(2026, 10, 15)
+
+    legacy = {key: value for key, value in raw.items() if key not in ("lastHoldReason", "heldOn")}
+    assert upload(legacy).unchanged_count == 1
+    legacy["age"] = 99
+    assert upload(legacy).updated_count == 1
+    assert record.last_hold_reason == "Awaiting access"
+    assert record.held_on == dt.date(2026, 10, 15)
+    assert upload({**legacy, "lastHoldReason": None, "heldOn": None}).updated_count == 1
+    assert record.last_hold_reason is None
+    assert record.held_on is None
+
+    # Even legacy exports must clear hold metadata when the chart leaves hold.
+    assert upload(raw).updated_count == 1
+    assert upload({**legacy, "status": "Completed"}).updated_count == 1
+    assert record.last_hold_reason is None
+    assert record.held_on is None
+    # New exports can contain stale hold metadata on non-hold charts; discard it.
+    assert upload({**raw, "status": "Completed", "age": 99}).unchanged_count == 1
+
+
+def test_upload_snapshot_saves_hold_metadata(api_client, manager_user):
+    _login_manager(api_client, manager_user)
+    _get_or_create_user("charishma.sonani@example.com", "Charishma", "Sonani", "TEST-CHARISHMA")
+    status, body = api_client.post("/api/kairon/uploads", {
+        "asOfDate": "2026-10-15", "rows": [_sample_row(
+            status="On Hold", lastHoldReason="Awaiting access", heldOn="2026-10-14")],
+    })
+    assert status == 201, body
+    status, body = api_client.get("/api/kairon/charts")
+    assert status == 200, body
+    assert body["data"][0]["lastHoldReason"] == "Awaiting access"
+    assert body["data"][0]["heldOn"] == "2026-10-14"

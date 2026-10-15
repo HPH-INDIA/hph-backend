@@ -71,7 +71,7 @@ def test_callback_is_fast_idempotent_and_worker_imports(manager_user, fake_stora
     objects, _ = fake_storage
     user = _get_or_create_user("charishma.sonani@example.com", "Charishma", "Sonani", "TEST-CHARISHMA")
     job, _ = make_job(manager_user)
-    result = submit(job, [_sample_row(mbi="synthetic-identifier")], objects)
+    result = submit(job, [_sample_row(mbi="synthetic-identifier", status="On Hold", lastHoldReason="Awaiting access", heldOn="2026-10-14")], objects)
     assert result["status"] == "queued"
     assert KaironChartRecord.query.count() == 0
     again = upload_complete(job, {"file_size": job.file_size, "file_checksum": job.file_checksum})
@@ -79,6 +79,9 @@ def test_callback_is_fast_idempotent_and_worker_imports(manager_user, fake_stora
     process_job(job)
     assert job.status == "completed", job.error
     assert KaironChartRecord.query.one().user_id == user.id
+    record = KaironChartRecord.query.one()
+    assert record.last_hold_reason == "Awaiting access"
+    assert record.held_on.isoformat() == "2026-10-14"
     assert KaironChartHistory.query.count() == 1
     assert KaironImportChunk.query.count() == 1
     assert b"synthetic-identifier" not in objects[job.object_path]

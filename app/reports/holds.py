@@ -11,7 +11,7 @@ from app.users.models import User
 
 
 HOLD_AGE_BUCKETS = ("on_track", "monitor", "attention", "priority", "unknown")
-HOLD_SORT_COLUMNS = ("id", "user", "program", "created", "practice", "lastAction", "age", "tat")
+HOLD_SORT_COLUMNS = ("id", "user", "program", "created", "practice", "lastAction", "heldOn", "lastHoldReason", "age", "tat")
 
 
 def hold_age_bucket():
@@ -38,6 +38,8 @@ def order_holds(query, args):
         "created": [KaironChartRecord.created_date],
         "practice": [db.func.lower(db.func.nullif(KaironChartRecord.practice, ""))],
         "lastAction": [db.func.lower(db.func.nullif(KaironChartRecord.last_action, "")), KaironChartRecord.actions],
+        "heldOn": [KaironChartRecord.held_on],
+        "lastHoldReason": [db.func.lower(db.func.nullif(KaironChartRecord.last_hold_reason, ""))],
         "age": [KaironChartRecord.age_days],
         "tat": [KaironChartRecord.tat_days],
     }[sort_by]
@@ -104,6 +106,10 @@ def hold_query(members, args):
         query = query.filter(KaironChartRecord.created_date >= args["created_from"])
     if args.get("created_to"):
         query = query.filter(KaironChartRecord.created_date <= args["created_to"])
+    if args.get("held_from"):
+        query = query.filter(KaironChartRecord.held_on >= args["held_from"])
+    if args.get("held_to"):
+        query = query.filter(KaironChartRecord.held_on <= args["held_to"])
     if args.get("practice") is not None:
         query = query.filter(KaironChartRecord.practice == args["practice"])
     if args.get("without_practice"):

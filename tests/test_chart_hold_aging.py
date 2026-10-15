@@ -53,7 +53,7 @@ def test_priority_inventory_remains_scoped_and_combines_filters(api_client, aged
     assert api_client.get(f"/api/reports/kairon/holds?ageBucket=priority&userId={inv.outsider.id}")[0] == 404
 
 
-@pytest.mark.parametrize("sort_by", ["id", "user", "program", "created", "practice", "lastAction", "age", "tat"])
+@pytest.mark.parametrize("sort_by", ["id", "user", "program", "created", "practice", "lastAction", "heldOn", "lastHoldReason", "age", "tat"])
 @pytest.mark.parametrize("direction", ["asc", "desc"])
 def test_every_column_sorts_before_pagination_with_nulls_last(api_client, inventory, sort_by, direction):
     inv = inventory
@@ -67,6 +67,8 @@ def test_every_column_sorts_before_pagination_with_nulls_last(api_client, invent
         row.level = ["2LR", "1LR", "3LR"][index % 3]
         row.practice = ["zebra", "Alpha", None][index % 3]
         row.last_action = ["Review", "awaiting", None][index % 3]
+        row.held_on = [dt.date(2026, 10, 1), None, dt.date(2026, 9, 30)][index % 3]
+        row.last_hold_reason = ["Awaiting access", "No records", None][index % 3]
         row.actions = index % 2
         row.age_days = [None, 40, 5][index % 3]
         row.tat_days = [8, None, 2][index % 3]
@@ -76,6 +78,8 @@ def test_every_column_sorts_before_pagination_with_nulls_last(api_client, invent
         return {"id": (row.id,), "user": (names[row.user_id],), "program": (row.program.lower(), row.level),
                 "created": (row.created_date,), "practice": (row.practice.lower() if row.practice else None,),
                 "lastAction": (row.last_action.lower() if row.last_action else None, row.actions),
+                "heldOn": (row.held_on,),
+                "lastHoldReason": (row.last_hold_reason.lower() if row.last_hold_reason else None,),
                 "age": (row.age_days,), "tat": (row.tat_days,)}[sort_by]
     base = sorted(rows, key=lambda row: row.id, reverse=True)
     known = [row for row in base if key(row)[0] is not None]
