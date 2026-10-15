@@ -299,6 +299,10 @@ class MonthlyGoalQuerySchema(Schema):
 
 
 class MonthlyGoalUserSchema(Schema):
+    kairon_pvp_count = fields.Integer(dump_only=True, data_key="kaironPvpCount")
+    kairon_foundation_count = fields.Integer(dump_only=True, data_key="kaironFoundationCount")
+    manual_pvp_count = fields.Integer(dump_only=True, data_key="manualPvpCount")
+    manual_foundation_count = fields.Integer(dump_only=True, data_key="manualFoundationCount")
     user_id = fields.Integer(dump_only=True, data_key="userId")
     name = fields.String(dump_only=True)
     manual_charts = fields.Integer(dump_only=True, data_key="manualCharts")
@@ -312,6 +316,10 @@ class MonthlyGoalUserSchema(Schema):
 
 
 class MonthlyGoalSchema(Schema):
+    kairon_pvp_count = fields.Integer(dump_only=True, data_key="kaironPvpCount")
+    kairon_foundation_count = fields.Integer(dump_only=True, data_key="kaironFoundationCount")
+    manual_pvp_count = fields.Integer(dump_only=True, data_key="manualPvpCount")
+    manual_foundation_count = fields.Integer(dump_only=True, data_key="manualFoundationCount")
     manual_charts = fields.Integer(dump_only=True, data_key="manualCharts")
     users = fields.List(fields.Nested(MonthlyGoalUserSchema), dump_only=True)
     month = fields.String(dump_only=True)
@@ -351,6 +359,10 @@ class CodingDashboardManualSchema(Schema):
 
 
 class DailyEfficiencySchema(Schema):
+    kairon_pvp_count = fields.Integer(dump_only=True, data_key="kaironPvpCount")
+    kairon_foundation_count = fields.Integer(dump_only=True, data_key="kaironFoundationCount")
+    manual_pvp_count = fields.Integer(dump_only=True, data_key="manualPvpCount")
+    manual_foundation_count = fields.Integer(dump_only=True, data_key="manualFoundationCount")
     date = fields.Date(dump_only=True)
     stage = fields.String(dump_only=True, allow_none=True)
     daily_target = fields.Float(dump_only=True, allow_none=True, data_key="dailyTarget")
@@ -381,6 +393,10 @@ class DailyEfficiencySchema(Schema):
 
 
 class EfficiencySummarySchema(Schema):
+    kairon_pvp_count = fields.Integer(dump_only=True, data_key="kaironPvpCount")
+    kairon_foundation_count = fields.Integer(dump_only=True, data_key="kaironFoundationCount")
+    manual_pvp_count = fields.Integer(dump_only=True, data_key="manualPvpCount")
+    manual_foundation_count = fields.Integer(dump_only=True, data_key="manualFoundationCount")
     from_date = fields.Date(dump_only=True, data_key="from")
     to_date = fields.Date(dump_only=True, data_key="to")
     manual_charts = fields.Integer(dump_only=True, data_key="manualCharts")

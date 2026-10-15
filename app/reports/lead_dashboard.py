@@ -37,9 +37,9 @@ def rollup_efficiency(summaries, from_date, to_date):
     missing when no contributing manual record supplies one.
     """
     total = {
-        key: sum((summary[key] for summary in summaries), 0)
+        key: sum((summary.get(key, 0) for summary in summaries), 0)
         for key in (
-            "manual_charts", "kairon_charts", "inside_minutes", "login_days",
+            "kairon_pvp_count", "kairon_foundation_count", "manual_pvp_count", "manual_foundation_count", "manual_charts", "kairon_charts", "inside_minutes", "login_days",
             "productive_minutes", "target_minutes", "calculated_days",
         )
     }
@@ -57,7 +57,7 @@ def rollup_efficiency(summaries, from_date, to_date):
     for day, rows in sorted(by_day.items(), reverse=True):
         stages = {row["stage"] for row in rows}
         row = {key: _sum_known(rows, key) for key in (
-            "daily_target", "manual_charts", "kairon_charts", "inside_minutes",
+            "daily_target", "kairon_pvp_count", "kairon_foundation_count", "manual_pvp_count", "manual_foundation_count", "manual_charts", "kairon_charts", "inside_minutes",
             "downtime_minutes", "idle_minutes", "leave_minutes", "meeting_minutes",
             "excluded_minutes", "productive_minutes", "target_minutes", "adjusted_target", "adjusted_cpd",
         )}
@@ -74,8 +74,8 @@ def rollup_efficiency(summaries, from_date, to_date):
 def _goal_for_users(goal, user_ids, scope):
     users = [row for row in goal["users"] if row["user_id"] in user_ids]
     result = {**goal, "scope": scope, "user_count": len(users), "users": users}
-    for key in ("manual_charts", "completed_charts", "target_charts", "difference", "eligible_days", "leave_days_excluded"):
-        result[key] = sum(row[key] for row in users)
+    for key in ("kairon_pvp_count", "kairon_foundation_count", "manual_pvp_count", "manual_foundation_count", "manual_charts", "completed_charts", "target_charts", "difference", "eligible_days", "leave_days_excluded"):
+        result[key] = sum(row.get(key, 0) for row in users)
     for key in ("adjusted_target_charts", "adjusted_difference"):
         result[key] = sum((row[key] for row in users), Decimal("0.00"))
     return result
