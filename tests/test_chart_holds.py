@@ -167,3 +167,37 @@ def test_reports_permission_is_required(api_client, inventory, monkeypatch):
     monkeypatch.setattr("app.auth.has_feature", lambda *args, **kwargs: False)
     for endpoint in ("holds", "holds-summary"):
         assert api_client.get(f"/api/reports/kairon/{endpoint}")[0] == 403
+
+
+@pytest.mark.parametrize("role", ["coder", "lead", "manager"])
+def test_held_dates_filter_details_and_summaries_in_every_role(api_client, inventory, role):
+    inv = inventory
+    inv.first.held_on = dt.date(2026, 10, 1)
+    inv.first.last_hold_reason = "Awaiting access"
+    inv.last.held_on = dt.date(2026, 10, 15)
+    inv.same_day.held_on = dt.date(2026, 11, 1)
+    db.session.commit()
+    assert api_client.login(getattr(inv, role).email, "test-password")[0] == 200
+    for query, expected in [
+        ("?heldFrom=2026-10-01&heldTo=2026-10-31", {inv.first.id, inv.last.id}),
+        ("?heldFrom=2026-10-15&heldTo=2026-10-15", {inv.last.id}),
+        ("?heldFrom=2026-10-01&heldTo=2026-11-01", {inv.first.id, inv.last.id, inv.same_day.id}),
+        ("?heldTo=2026-10-01", {inv.first.id}),
+        ("?heldFrom=2026-11-01", {inv.same_day.id}),
+        ("?heldFrom=2026-10-01&heldTo=2026-10-31&createdFrom=2026-09-30", {inv.last.id}),
+    ]:
+        records = fetch(api_client, "holds", query)
+        summary = fetch(api_client, "holds-summary", query)
+        assert {item["id"] for item in records["items"]} == expected
+        assert records["total"] == summary["total"] == len(expected)
+        assert sum(summary["ageBuckets"].values()) == len(expected)
+    details = fetch(api_client, "holds", "?heldTo=2026-10-01")["items"][0]
+    assert details["heldOn"] == "2026-10-01"
+    assert details["lastHoldReason"] == "Awaiting access"
+
+
+@pytest.mark.parametrize("query", ["heldFrom=invalid", "heldTo=2026-02-30", "heldFrom=2026-10-31&heldTo=2026-10-01"])
+def test_invalid_held_date_filters(api_client, inventory, query):
+    assert api_client.login(inventory.coder.email, "test-password")[0] == 200
+    for endpoint in ("holds", "holds-summary"):
+        assert api_client.get(f"/api/reports/kairon/{endpoint}?{query}")[0] == 422

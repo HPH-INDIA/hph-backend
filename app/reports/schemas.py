@@ -552,6 +552,8 @@ class KaironHoldQuerySchema(PaginationQuerySchema):
     lead_id = fields.String(load_default=None, validate=validate.Regexp(r"^(unassigned|[1-9][0-9]*)$"), data_key="leadId")
     created_from = fields.Date(load_default=None, data_key="createdFrom")
     created_to = fields.Date(load_default=None, data_key="createdTo")
+    held_from = fields.Date(load_default=None, data_key="heldFrom")
+    held_to = fields.Date(load_default=None, data_key="heldTo")
     practice = fields.String(load_default=None, validate=validate.Length(min=1, max=255))
     without_practice = fields.Boolean(load_default=False, data_key="withoutPractice")
 
@@ -559,6 +561,8 @@ class KaironHoldQuerySchema(PaginationQuerySchema):
     def validate_filters(self, data, **kwargs):
         if data.get("created_from") and data.get("created_to") and data["created_from"] > data["created_to"]:
             raise ValidationError("Created to must be on or after created from.", field_name="createdTo")
+        if data.get("held_from") and data.get("held_to") and data["held_from"] > data["held_to"]:
+            raise ValidationError("Held to must be on or after held from.", field_name="heldTo")
         if data.get("practice") and data.get("without_practice"):
             raise ValidationError("Choose a practice or no practice, not both.", field_name="practice")
 

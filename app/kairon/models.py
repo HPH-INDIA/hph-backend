@@ -63,6 +63,10 @@ class KaironChartRecord(db.Model):
     __tablename__ = "kairon_chart_records"
     __table_args__ = (
         db.CheckConstraint(
+            "status = 'On Hold' OR (last_hold_reason IS NULL AND held_on IS NULL)",
+            name="ck_kairon_hold_metadata_status",
+        ),
+        db.CheckConstraint(
             f"level IN ({_sql_in_list(VALID_KAIRON_LEVELS)})", name="ck_kairon_chart_records_level"
         ),
         db.CheckConstraint(
@@ -91,6 +95,8 @@ class KaironChartRecord(db.Model):
 
     actions = db.Column(db.Integer, nullable=False, default=0)
     last_action = db.Column(db.Text, nullable=True)
+    last_hold_reason = db.Column(db.Text, nullable=True)
+    held_on = db.Column(db.Date, nullable=True)
     created_date = db.Column(db.Date, nullable=False)
     completed_date = db.Column(db.Date, nullable=True)
     tat_days = db.Column(db.Integer, nullable=True)

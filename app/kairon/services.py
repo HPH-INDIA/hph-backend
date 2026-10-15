@@ -34,6 +34,8 @@ TEMPLATE_COLUMNS = (
     "Coding Analyst",
     "Actions",
     "Last Action",
+    "Last Hold Reason",
+    "Held On",
     "Created",
     "Completed",
     "TAT",
@@ -158,6 +160,8 @@ def import_batch(as_of_date, rows, uploaded_by_id, source_filename=None):
             coding_analyst_raw=row["coding_analyst"],
             actions=row.get("actions", 0),
             last_action=row.get("last_action"),
+            last_hold_reason=row.get("last_hold_reason") if row["status"] == "On Hold" else None,
+            held_on=row.get("held_on") if row["status"] == "On Hold" else None,
             created_date=row["created_date"],
             completed_date=row.get("completed_date"),
             tat_days=row.get("tat_days"),
@@ -260,6 +264,8 @@ _MUTABLE_RECORD_FIELDS = (
     "coding_analyst_raw",
     "actions",
     "last_action",
+    "last_hold_reason",
+    "held_on",
     "created_date",
     "completed_date",
     "tat_days",
@@ -278,6 +284,9 @@ def _record_values(row, user, batch_id):
         "coding_analyst_raw": row["coding_analyst"],
         "actions": row.get("actions", 0),
         "last_action": row.get("last_action"),
+        # Missing columns mean a legacy file; explicit nulls clear metadata.
+        **({field: row[field] for field in ("last_hold_reason", "held_on") if field in row}
+           if row["status"] == "On Hold" else {"last_hold_reason": None, "held_on": None}),
         "created_date": row["created_date"],
         "completed_date": row.get("completed_date"),
         "tat_days": row.get("tat_days"),
@@ -360,7 +369,7 @@ def process_import_chunk(batch_id, chunk_number, checksum, rows):
 
         previous_status = record.status
         previous_user_id = record.user_id
-        changed = any(getattr(record, field) != values[field] for field in _MUTABLE_RECORD_FIELDS if field != "batch_id")
+        changed = any(getattr(record, field) != values[field] for field in _MUTABLE_RECORD_FIELDS if field in values)
         if not changed:
             counts["unchanged"] += 1
             continue
