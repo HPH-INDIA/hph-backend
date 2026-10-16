@@ -590,11 +590,13 @@ KaironHoldSummaryEnvelopeSchema = envelope_schema(
 
 
 # Explicit allowlist: client performance never serializes attendance or training metadata.
-CLIENT_DAILY_FIELDS = ("date", "daily_target", "manual_charts", "kairon_charts",
+CLIENT_PRODUCTION_FIELDS = ("kairon_pvp_count", "kairon_foundation_count",
+    "manual_pvp_count", "manual_foundation_count")
+CLIENT_DAILY_FIELDS = (*CLIENT_PRODUCTION_FIELDS, "date", "daily_target", "manual_charts", "kairon_charts",
     "target_minutes", "adjusted_target", "adjusted_cpd", "manual_efficiency_percent",
     "kairon_efficiency_percent", "manual_cpd", "kairon_cpd", "target_cpd",
     "downtime_minutes", "idle_minutes", "leave_minutes", "meeting_minutes", "excluded_minutes", "manual_status")
-CLIENT_SUMMARY_FIELDS = ("from_date", "to_date", "manual_charts", "kairon_charts",
+CLIENT_SUMMARY_FIELDS = (*CLIENT_PRODUCTION_FIELDS, "from_date", "to_date", "manual_charts", "kairon_charts",
     "adjusted_target", "adjusted_cpd", "target_minutes", "calculated_days",
     "manual_efficiency_percent", "kairon_efficiency_percent", "manual_cpd", "kairon_cpd", "target_cpd")
 
