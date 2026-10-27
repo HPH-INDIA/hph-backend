@@ -32,7 +32,7 @@ class User(db.Model):
     reports_to_id = db.Column(
         db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    password_hash = db.Column(db.String(255), nullable=False)
+    password_hash = db.Column(db.String(255), nullable=True)
     first_login = db.Column(db.Boolean, nullable=False, default=True)
     temp_password_expires_at = db.Column(db.DateTime(timezone=True), nullable=True)
     is_active = db.Column(db.Boolean, nullable=False, default=True)

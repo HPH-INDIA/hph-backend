@@ -1,3 +1,4 @@
+from flask import g
 from marshmallow import Schema, fields
 
 from app.extensions import db
@@ -54,7 +55,19 @@ class UserProfileSchema(Schema):
     first_name = fields.String(data_key="firstName")
     last_name = fields.String(data_key="lastName")
     emp_id = fields.String(data_key="empId")
-    first_login = fields.Boolean(data_key="firstLogin")
+    first_login = fields.Method("needs_password_setup", data_key="firstLogin")
+    password_enabled = fields.Method("has_password", data_key="passwordEnabled")
+    auth_method = fields.Method("get_auth_method", data_key="authMethod")
+
+    def needs_password_setup(self, user):
+        return bool(user.first_login and getattr(g, "session", None) and g.session.auth_method == "password")
+
+    def has_password(self, user):
+        return bool(user.password_hash)
+
+    def get_auth_method(self, user):
+        return g.session.auth_method if getattr(g, "session", None) else "password"
+
     is_active = fields.Boolean(data_key="isActive")
     project = fields.Method("get_project")
     role = fields.Method("get_role")
@@ -68,6 +81,17 @@ class UserProfileSchema(Schema):
 
 class LoginDataSchema(Schema):
     user = fields.Nested(UserProfileSchema)
+    session_id = fields.Method("get_session_id", data_key="sessionId")
+    csrf_token = fields.Method("get_csrf_token", data_key="csrfToken")
+
+    def get_session_id(self, data):
+        return g.session.id
+
+
+    def get_csrf_token(self, data):
+        from app.sessions.csrf import csrf_token
+        return csrf_token(g.session)
+
 
 
 class SessionSchema(Schema):

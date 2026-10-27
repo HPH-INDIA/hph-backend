@@ -49,6 +49,7 @@ def validate_reporting_line(role, project_id, reports_to_id, user_id=None):
 
 
 class UserCreateSchema(Schema):
+    password_login_enabled = fields.Boolean(load_default=True)
     email = fields.Email(required=True)
     first_name = fields.String(required=True, validate=validate.Length(min=1, max=128))
     last_name = fields.String(required=True, validate=validate.Length(min=1, max=128))
@@ -85,7 +86,12 @@ class UserSchema(Schema):
     role = fields.Method("get_role", dump_only=True)
     project_id = fields.Integer(dump_only=True, allow_none=True)
     reports_to_id = fields.Integer(dump_only=True, allow_none=True)
+    password_enabled = fields.Method("has_password", dump_only=True)
     first_login = fields.Boolean(dump_only=True)
+
+    def has_password(self, user):
+        return bool(user.password_hash)
+
     is_active = fields.Boolean(dump_only=True)
     join_date = fields.Date(dump_only=True, allow_none=True)
     last_working_day = fields.Date(dump_only=True, allow_none=True)

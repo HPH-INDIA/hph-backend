@@ -10,6 +10,8 @@ from app.responses import api_response
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+    from app.entra.services import validate_config
+    validate_config(app)
 
     if app.config["MAIL_VALIDATE_CONFIG"]:
         from app.mailing.config import validate_mail_config
@@ -49,6 +51,7 @@ def create_app():
     )
 
     # models must be imported before `flask db migrate` for autogenerate to see them
+    from app.entra import models as entra_models  # noqa: F401
     from app.roles import models as roles_models  # noqa: F401
     from app.features import models as features_models  # noqa: F401
     from app.users import models as users_models  # noqa: F401
@@ -75,6 +78,13 @@ def create_app():
     from app.manual_daily_records import bp as manual_daily_records_bp
     from app.reports import bp as reports_bp
     from app.login_hours import bp as login_hours_bp
+    from app.entra import bp as entra_bp
+    app.register_blueprint(entra_bp)
+    from app.entra.admin import bp as entra_admin_bp
+    api.register_blueprint(entra_admin_bp)
+    from app.entra.commands import link_entra_command, cleanup_auth_command
+    app.cli.add_command(link_entra_command)
+    app.cli.add_command(cleanup_auth_command)
     api.register_blueprint(roles_bp)
     api.register_blueprint(features_bp)
     from app.projects import bp as projects_bp
@@ -100,6 +110,9 @@ def create_app():
     from app.sessions.hooks import load_session
     app.before_request(decrypt_request_body)
     app.before_request(load_session)
+    from app.sessions.csrf import protect_mutation, session_response_headers
+    app.before_request(protect_mutation)
+    app.after_request(session_response_headers)
     from app.clients import enforce_client_access
     app.before_request(enforce_client_access)
     app.after_request(encrypt_response_body)

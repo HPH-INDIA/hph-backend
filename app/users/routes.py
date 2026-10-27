@@ -146,7 +146,11 @@ class Users(MethodView):
             db.session.rollback()
             _abort_duplicate_field(exc)
 
-        _issue_temp_password(user)
+        if data.get("password_login_enabled", True):
+            _issue_temp_password(user)
+        else:
+            user.password_hash = None
+            user.first_login = False
         from app.cohorts.stage_refresh import rebuild_main_periods
         rebuild_main_periods(user)
         db.session.commit()
@@ -317,6 +321,8 @@ class UserDetail(MethodView):
     def patch(self, data, user_id):
         user = User.query.get_or_404(user_id)
         _enforce_hierarchy("manage", user.role)
+        if "password_login_enabled" in data:
+            abort(400, message="Password provisioning can only be selected when creating an account.")
 
         new_role = user.role
         if "role_id" in data:
@@ -333,6 +339,9 @@ class UserDetail(MethodView):
             validate_reporting_line(new_role, effective_project_id, effective_reports_to_id, user.id)
         except ValueError as exc:
             abort(400, message=str(exc))
+        if user.entra_identity and user.entra_identity.account_type == "guest" and (
+                new_role.role_type.code != "client" or effective_project_id is None):
+            abort(400, message="Guests require the Client role and an assigned project.")
         _enforce_reporting_scope(new_role, effective_reports_to_id)
 
         for key in ("email", "first_name", "last_name", "emp_id", "role_id", "project_id", "reports_to_id", "join_date"):
@@ -383,6 +392,8 @@ class ResendTemporaryPassword(MethodView):
         user = User.query.get_or_404(user_id)
         _enforce_hierarchy("manage", user.role)
 
+        if not user.password_hash:
+            abort(403, message="This account uses Microsoft sign-in and has no HPH password.")
         _issue_temp_password(user, is_resend=True)
         _revoke_active_sessions(user)
         db.session.commit()
@@ -412,5 +423,5 @@ class SetPassword(MethodView):
         db.session.commit()
         send_password_changed_confirmation(user)
 
-        issue_session(user)
+        issue_session(user, auth_method=g.session.auth_method)
         return {"status": 200, "message": "Password updated successfully.", "data": {"user": user}}

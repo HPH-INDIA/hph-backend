@@ -33,7 +33,7 @@ class Login(MethodView):
         except InvalidCredentialsError:
             _invalid_credentials()
 
-        if not user.is_active:
+        if not user.is_active or not user.role.is_active:
             _invalid_credentials()
 
         if user.first_login and user.temp_password_expires_at is not None:
@@ -44,6 +44,9 @@ class Login(MethodView):
                     code="temp_password_expired",
                 )
 
+        from app.entra.services import guest_role_allowed
+        if user.entra_identity and not guest_role_allowed(user.entra_identity):
+            _invalid_credentials()
         issue_session(user)
         return {"status": 200, "message": "Login successful.", "data": {"user": user}}
 

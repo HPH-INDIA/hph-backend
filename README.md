@@ -172,3 +172,8 @@ Model changes must be imported in `app/__init__.py` before running `flask db mig
 Whole-workbook imports finish atomically. Chunked uploads send `isFinalChunk: true` only with the last chunk; retries are idempotent and later chunks cannot extend a completed upload. Batch date coverage includes valid CODING rows even if names are unmatched. Date-keyed punch user IDs are retained with each batch so partial or replacement uploads cannot corrupt the previously completed report. The card stays hidden when there is no completed coverage for today, refreshes after a completed upload, polls every minute, and discards the previous day at midnight IST.
 
 Migration `8acb1f8e5b44` adds completion and immutable daily metadata to the existing RLS-protected upload table. Legacy uploads have no reliable completion marker and are not inferred complete. Upload today’s sheet once with the updated client to initialize the daily report. Existing attendance rows, hours, stages, targets and access permissions are preserved.
+
+## Microsoft Entra sign-in
+
+Optional Microsoft sign-in coexists with HPH password login. See
+[the setup guide](docs/microsoft-entra.md) and `.env.entra.example`.

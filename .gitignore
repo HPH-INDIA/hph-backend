@@ -247,3 +247,6 @@ logs/
 
 # Production templates contain placeholders only
 !.env.production.example
+
+# Public Entra configuration template.
+!.env.entra.example
