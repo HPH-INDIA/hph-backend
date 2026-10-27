@@ -53,6 +53,12 @@ def _set_role_features(role, feature_ids, feature_permissions=None):
 def _validate_role_scope(data, role=None):
     role_type = db.session.get(RoleType, data.get("role_type_id", role.role_type_id if role else None))
     if role_type.code != "client":
+        if role:
+            from app.entra.models import ExternalIdentity
+            from app.users.models import User
+            if db.session.query(ExternalIdentity.id).join(User, User.id == ExternalIdentity.user_id).filter(
+                    User.role_id == role.id, ExternalIdentity.account_type == "guest").first():
+                abort(422, message="A role assigned to invited guests must remain Client.")
         return
     permissions = data.get("feature_permissions")
     if permissions is not None and any(p["can_write"] for p in permissions):

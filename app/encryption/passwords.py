@@ -17,6 +17,8 @@ def hash_password(plaintext):
 
 
 def verify_password(password_hash, plaintext):
+    if not password_hash:
+        raise InvalidCredentialsError()
     try:
         _hasher.verify(password_hash, plaintext)
     except (VerifyMismatchError, VerificationError, InvalidHashError):

@@ -52,6 +52,16 @@ class Config:
     # Session cookies must be Secure (HTTPS-only) per the doc's "TLS everywhere"
     # requirement. Defaults to True; only disable for local HTTP-only dev.
     SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE", True)
+    # Entra is opt-in. Password login stays available during coexistence.
+    ENTRA_ENABLED = _env_bool("ENTRA_ENABLED")
+    ENTRA_TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "")
+    ENTRA_CLIENT_ID = os.environ.get("ENTRA_CLIENT_ID", "")
+    ENTRA_CLIENT_SECRET = os.environ.get("ENTRA_CLIENT_SECRET", "")
+    ENTRA_PRIVATE_KEY_FILE = os.environ.get("ENTRA_PRIVATE_KEY_FILE", "")
+    ENTRA_CERT_THUMBPRINT = os.environ.get("ENTRA_CERT_THUMBPRINT", "")
+    ENTRA_TRANSACTION_KEY = os.environ.get("ENTRA_TRANSACTION_KEY", "")
+    PUBLIC_APP_ORIGIN = os.environ.get("PUBLIC_APP_ORIGIN", "http://localhost:5173").rstrip("/")
+    CSRF_ENABLED = _env_bool("CSRF_ENABLED", True)
     TEMP_PASSWORD_EXPIRY_HOURS = int(os.environ.get("TEMP_PASSWORD_EXPIRY_HOURS", "72"))
 
     # Private import storage. Secret is server-only; never a VITE_* variable.

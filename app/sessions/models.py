@@ -16,6 +16,8 @@ class Session(db.Model):
     user_agent = db.Column(db.String(255), nullable=True)
     revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
+    auth_method = db.Column(db.String(16), nullable=False, default="password", server_default="password")
+
     user = db.relationship("User")
 
     def __repr__(self):

@@ -12,6 +12,7 @@ os.environ["DATABASE_URL"] = os.environ.get(
 # Unit/integration tests provide their own provider configuration and must not
 # inherit deployment-only fail-fast validation from a developer's .env file.
 os.environ["EMAIL_VALIDATE_CONFIG"] = "false"
+os.environ["ENTRA_ENABLED"] = "false"
 
 import datetime as dt
 import json
@@ -235,11 +236,16 @@ class ApiClient:
 
     def __init__(self, test_client):
         self.client = test_client
+        self.csrf_token = ""
 
     def _decrypt(self, response):
         key_version = int(response.headers["X-Encryption-Key-Version"])
         key = get_key_for_decryption(key_version)
-        return json.loads(decrypt_payload(response.data, key))
+        payload = json.loads(decrypt_payload(response.data, key))
+        data = payload.get("data")
+        if isinstance(data, dict) and "csrfToken" in data:
+            self.csrf_token = data["csrfToken"]
+        return payload
 
     def get(self, path):
         response = self.client.get(path)
@@ -247,7 +253,7 @@ class ApiClient:
 
     def delete(self, path, body=None):
         if body is None:
-            response = self.client.delete(path)
+            response = self.client.delete(path, headers={"Origin": "http://localhost:5173", "X-CSRF-Token": self.csrf_token})
         else:
             version, key = get_active_key()
             encrypted = encrypt_payload(json.dumps(body).encode(), key)
@@ -255,7 +261,7 @@ class ApiClient:
                 path,
                 data=encrypted,
                 content_type="application/json",
-                headers={"X-Encryption-Key-Version": str(version)},
+                headers={"X-Encryption-Key-Version": str(version), "Origin": "http://localhost:5173", "X-CSRF-Token": self.csrf_token},
             )
         return response.status_code, self._decrypt(response)
 
@@ -274,6 +280,8 @@ class ApiClient:
             headers={
                 "X-Encryption-Key-Version": str(version),
                 "Content-Type": "application/json",
+                "Origin": "http://localhost:5173",
+                "X-CSRF-Token": self.csrf_token,
             },
         )
         return response.status_code, self._decrypt(response)
