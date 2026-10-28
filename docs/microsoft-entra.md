@@ -137,3 +137,46 @@ source in `/opt/hph`. Its launcher merges pinned Secret Manager values with `set
 Deploy reviewed application files with a source/settings backup, install authentication dependencies,
 run the existing migration chain, and restart `hph-backend.service`. Verify `/auth/options` returns
 `{"microsoftEnabled":false}` through both the backend and public frontend.
+
+## Production certificate runtime
+
+The versioned VM launcher is `deploy/gce/run-with-secrets.py`. Install it as
+`/opt/hph/run-with-secrets.py`, and install `deploy/gce/entra-runtime.conf` as
+`/etc/systemd/system/hph-backend.service.d/entra-runtime.conf`. Run `systemctl daemon-reload`
+before restarting `hph-backend.service`. The existing service runs as `hph` with restrictive
+filesystem permissions; systemd creates `/run/hph-entra` owned by that user with mode `0700`.
+
+Keep the certificate private key in the `hph-entra-private-key` Secret Manager secret and the
+Fernet transaction key in `hph-entra-transaction-key`. Pin their exact version resource names
+under `ENTRA_PRIVATE_KEY_PEM` and `ENTRA_TRANSACTION_KEY` in `/opt/hph/secret-refs.json`.
+The runtime service account needs Secret Accessor on those two resources, not permission to
+create new versions. The launcher writes the certificate key into the systemd runtime directory
+with mode `0600`, removes the PEM value from the environment passed to Gunicorn, and supplies
+only `ENTRA_PRIVATE_KEY_FILE=/run/hph-entra/private-key.pem`. Other secrets retain the existing
+environment-based loading behavior. Never commit private keys, transaction keys, settings files,
+secret payloads, or per-user identity exports.
+
+Set `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, and `ENTRA_CERT_THUMBPRINT` in backend settings.
+Upload only the corresponding public certificate to the production Entra app registration.
+The registration and certificate must match before enabling login; certificate rotation requires
+registering the replacement public certificate and updating the pinned secret version and thumbprint.
+Keep `ENTRA_ENABLED=false` during this setup and preserve password login.
+
+As of 2026-10-28, the production backend credentials are configured and all 42 approved active
+HPH group members have verified identity links. The 41 new links were applied through the
+audited application linking service; the existing pilot link was preserved. Passwords, roles,
+and project assignments were checked unchanged. Public certificate registration and a real
+Microsoft sign-in test remain pending. Admin consent was reported granted by the tenant admin.
+Do not treat configuration checks as evidence of a successful real Microsoft login.
+
+After registering the public certificate, test `vinay.vudatala@humanpoweredhealth.com` first.
+Enabling the current global flag makes Microsoft login available to all eligible linked,
+assigned users; it does not provide a pilot-user allowlist. Keep the flag disabled until ready
+for that change. Verify both Microsoft and password sign-in, and roll back availability with
+`ENTRA_ENABLED=false` if the pilot fails. Do not remove identity links or manufacture passwords.
+
+To validate just the VM launcher without a database or cloud credentials:
+
+```sh
+python -m unittest discover -s tests/unit -p test_gce_secret_launcher.py
+```
