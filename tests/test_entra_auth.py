@@ -28,7 +28,7 @@ CLIENT = "22222222-2222-4222-8222-222222222222"
 def entra(app, monkeypatch, employee_user):
     import app.entra.routes as routes
     import app.entra.services as services
-    values = dict(ENTRA_ENABLED=True, ENTRA_TENANT_ID=TENANT, ENTRA_CLIENT_ID=CLIENT,
+    values = dict(ENTRA_ENABLED=True, ENTRA_PILOT_OBJECT_IDS="", ENTRA_TENANT_ID=TENANT, ENTRA_CLIENT_ID=CLIENT,
         ENTRA_TRANSACTION_KEY=Fernet.generate_key().decode(), PUBLIC_APP_ORIGIN="http://localhost:5173",
         ENTRA_CLIENT_SECRET="test-only", SESSION_COOKIE_SECURE=False, CSRF_ENABLED=True)
     for key, value in values.items():
@@ -116,6 +116,36 @@ def test_both_methods_share_user_and_keep_password(api_client, entra, employee_u
     assert employee_user.password_hash == original_hash
     assert api_client.post("/api/sessions/logout")[0] == 200
     assert api_client.login(employee_user.email, "test-password")[0] == 200
+
+
+def test_pilot_allows_selected_identity(api_client, entra, app, monkeypatch):
+    monkeypatch.setitem(app.config, "ENTRA_PILOT_OBJECT_IDS", entra["oid"].upper())
+    assert finish(api_client, begin(api_client, entra)).location == "http://localhost:5173/reports?tab=manual"
+    assert api_client.get("/api/sessions/whoami")[1]["data"]["user"]["authMethod"] == "entra"
+
+
+def test_pilot_denies_other_linked_identity_but_keeps_password(api_client, entra, app, employee_user, monkeypatch):
+    monkeypatch.setitem(app.config, "ENTRA_PILOT_OBJECT_IDS", str(uuid4()))
+    assert error(finish(api_client, begin(api_client, entra))) == "access_denied"
+    assert Session.query.filter_by(user_id=employee_user.id, auth_method="entra", revoked_at=None).count() == 0
+    assert api_client.login(employee_user.email, "test-password")[0] == 200
+    assert api_client.get("/api/sessions/whoami")[0] == 200
+
+
+def test_pilot_restriction_also_blocks_existing_entra_sessions(api_client, entra, app, monkeypatch):
+    assert finish(api_client, begin(api_client, entra)).status_code == 303
+    assert api_client.get("/api/sessions/whoami")[0] == 200
+    monkeypatch.setitem(app.config, "ENTRA_PILOT_OBJECT_IDS", str(uuid4()))
+    assert api_client.get("/api/sessions/whoami")[0] == 401
+
+
+@pytest.mark.parametrize("value", [" ", "not-a-uuid", TENANT + ",", "," + TENANT])
+def test_invalid_pilot_configuration_fails_closed(api_client, entra, app, monkeypatch, value):
+    from app.entra.services import validate_config
+    monkeypatch.setitem(app.config, "ENTRA_PILOT_OBJECT_IDS", value)
+    with pytest.raises(ValueError):
+        validate_config(app)
+    assert error(finish(api_client, begin(api_client, entra))) == "access_denied"
 
 
 def test_microsoft_bypasses_only_password_onboarding(api_client, entra, employee_user):

@@ -57,14 +57,15 @@ def load_session():
     user = session.user
     if user is None or not user.is_active or not user.role.is_active:
         return _unauthorized()
-    from app.entra.services import guest_role_allowed
+    from app.entra.services import guest_role_allowed, pilot_identity_allowed
     identity = user.entra_identity
     if identity and not guest_role_allowed(identity):
         return _unauthorized()
     if session.auth_method == "entra":
         from flask import current_app
         if (not current_app.config["ENTRA_ENABLED"] or not identity or not identity.active
-                or identity.tenant_id != current_app.config["ENTRA_TENANT_ID"]):
+                or identity.tenant_id != current_app.config["ENTRA_TENANT_ID"]
+                or not pilot_identity_allowed(identity)):
             return _unauthorized()
     session.last_seen_at = now
     db.session.commit()

@@ -21,6 +21,24 @@ def uuid_string(value):
     return str(UUID(str(value)))
 
 
+def pilot_object_ids(value):
+    if value == "":
+        return frozenset()
+    return frozenset(uuid_string(item.strip()) for item in value.split(","))
+
+
+def pilot_identity_allowed(identity):
+    """Use stable tenant/object identifiers, never email, to restrict a pilot."""
+    try:
+        allowed = pilot_object_ids(current_app.config.get("ENTRA_PILOT_OBJECT_IDS", ""))
+        return not allowed or (
+            uuid_string(identity.tenant_id) == uuid_string(current_app.config["ENTRA_TENANT_ID"])
+            and uuid_string(identity.object_id) in allowed
+        )
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 def validate_config(app):
     origin = urlsplit(app.config["PUBLIC_APP_ORIGIN"])
     if (not origin.netloc or origin.username or origin.password or origin.path or origin.query or origin.fragment
@@ -28,6 +46,7 @@ def validate_config(app):
         raise ValueError("PUBLIC_APP_ORIGIN must be an origin without a path.")
     if origin.scheme != "https" and origin.hostname not in {"localhost", "127.0.0.1", "::1"}:
         raise ValueError("PUBLIC_APP_ORIGIN must use HTTPS outside localhost.")
+    pilot_object_ids(app.config.get("ENTRA_PILOT_OBJECT_IDS", ""))
     if not app.config["ENTRA_ENABLED"]:
         return
     if origin.scheme == "https" and not app.config["SESSION_COOKIE_SECURE"]:

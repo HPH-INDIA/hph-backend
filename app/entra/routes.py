@@ -11,7 +11,7 @@ from sqlalchemy import delete
 from app.entra import bp
 from app.entra.models import AuthTransaction, ExternalIdentity
 from app.entra.services import (client, decrypt_flow, digest, encrypt_flow, guest_role_allowed,
-    safe_return_to, uuid_string, validate_id_token)
+    pilot_identity_allowed, safe_return_to, uuid_string, validate_id_token)
 from app.extensions import db
 from app.sessions.services import issue_session
 
@@ -91,7 +91,7 @@ def callback():
             object_id=uuid_string(claims["oid"]), active=True).with_for_update().first()
         if identity is None or not identity.user.is_active or not identity.user.role.is_active:
             return failure("account_unavailable")
-        if not guest_role_allowed(identity):
+        if not guest_role_allowed(identity) or not pilot_identity_allowed(identity):
             return failure("access_denied")
         # Optional acct claim can tighten guest protection when configured by IT.
         if str(claims.get("acct", "")) == "1" and identity.account_type != "guest":
