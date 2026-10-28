@@ -165,14 +165,23 @@ Keep `ENTRA_ENABLED=false` during this setup and preserve password login.
 As of 2026-10-28, the production backend credentials are configured and all 42 approved active
 HPH group members have verified identity links. The 41 new links were applied through the
 audited application linking service; the existing pilot link was preserved. Passwords, roles,
-and project assignments were checked unchanged. Public certificate registration and a real
-Microsoft sign-in test remain pending. Admin consent was reported granted by the tenant admin.
+and project assignments were checked unchanged. Public certificate registration was verified
+on 2026-10-28; a real Microsoft sign-in test remains pending. Admin consent was reported granted by the tenant admin.
 Do not treat configuration checks as evidence of a successful real Microsoft login.
 
-After registering the public certificate, test `vinay.vudatala@humanpoweredhealth.com` first.
-Enabling the current global flag makes Microsoft login available to all eligible linked,
-assigned users; it does not provide a pilot-user allowlist. Keep the flag disabled until ready
-for that change. Verify both Microsoft and password sign-in, and roll back availability with
+For a first-user production test, set `ENTRA_PILOT_OBJECT_IDS` to that user's company-tenant
+object ID before setting `ENTRA_ENABLED=true`. The pilot restriction is checked both before
+issuing a Microsoft-authenticated HPH session and on each subsequent API request. Other assigned
+and linked users cannot use Microsoft login during the pilot; their password login remains
+available. Invalid UUIDs, whitespace-only values, or empty comma-separated entries fail startup
+validation. The login button may still be visible to all users; authorization is enforced by
+the backend after Microsoft authentication.
+
+The initial production pilot is `vinay.vudatala@humanpoweredhealth.com`, object ID
+`3698e584-75e3-4cec-9367-beb70af910b2`, in the configured company tenant. Multiple pilot IDs may
+be comma separated. An empty value disables the pilot restriction and enables normal access for
+all assigned, linked users, so clear it only when a broader rollout is explicitly approved.
+Verify both Microsoft and password sign-in, and roll back availability with
 `ENTRA_ENABLED=false` if the pilot fails. Do not remove identity links or manufacture passwords.
 
 To validate just the VM launcher without a database or cloud credentials:

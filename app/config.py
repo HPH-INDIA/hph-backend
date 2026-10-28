@@ -54,6 +54,9 @@ class Config:
     SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE", True)
     # Entra is opt-in. Password login stays available during coexistence.
     ENTRA_ENABLED = _env_bool("ENTRA_ENABLED")
+    # Comma-separated tenant object IDs restrict Microsoft login during a pilot.
+    # Empty means normal access for all assigned, linked users.
+    ENTRA_PILOT_OBJECT_IDS = os.environ.get("ENTRA_PILOT_OBJECT_IDS", "")
     ENTRA_TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "")
     ENTRA_CLIENT_ID = os.environ.get("ENTRA_CLIENT_ID", "")
     ENTRA_CLIENT_SECRET = os.environ.get("ENTRA_CLIENT_SECRET", "")
