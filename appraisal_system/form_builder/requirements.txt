@@ -1,0 +1,2 @@
+# Include requirements shared by the HPH microservices
+-r common/requirements.txt

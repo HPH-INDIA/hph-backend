@@ -1,0 +1,1099 @@
+openapi: 3.0.1
+info:
+  title: Appraisal Server
+  description: >-
+    Micro-service running HPH appraisal cycles. Admins create and launch a cycle; every active
+    Employee and Lead in scope with a published form gets an appraisal. Employees fill their
+    form and submit it; an Employee's appraisal is reviewed by their Lead, who passes it to
+    their Manager, and a Lead's appraisal goes straight to their Manager. Either reviewer can
+    send it back with feedback; only the Manager approves, after recording the one-to-one.
+
+
+    Every request must carry `Authorization: Bearer <token>`, a short-lived token signed by the
+    Access/BFF service for a signed-in user, and the `caller_id` header with that user's HPH id.
+    Access depends on features: `appraisal_cycle_admin` (run cycles, monitor everything),
+    `appraisal_review` (Leads and Managers reviewing what is assigned to them) and
+    `appraisal_self` (filling one's own appraisal).
+  version: 1.0.0
+servers:
+  - url: http://localhost:5102
+paths:
+  /cycles:
+    get:
+      tags:
+        - Cycles
+      summary: List appraisal cycles
+      description: >-
+        Admins (`appraisal_cycle_admin` read) see every cycle; Leads and Managers
+        (`appraisal_review` read) see launched cycles so they can follow progress.
+      operationId: handlers.cycles.list_cycles
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/CycleStatus"
+      responses:
+        "200":
+          description: Cycles, most recent first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Cycle"
+        "403":
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - Cycles
+      summary: Create a draft cycle
+      description: >-
+        Creates a cycle for the whole organization or one project (FR-1, FR-2). Annual is the
+        default frequency; the frequency is a label and any dates may be used. Requires
+        `appraisal_cycle_admin` write.
+      operationId: handlers.cycles.create_cycle
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CycleCreateRequest"
+      responses:
+        "201":
+          description: The draft cycle
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cycle"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+
+  /cycles/{cycle_id}:
+    get:
+      tags:
+        - Cycles
+      summary: Get a cycle
+      operationId: handlers.cycles.get_cycle
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/cycle_id"
+      responses:
+        "200":
+          description: The cycle
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cycle"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+    patch:
+      tags:
+        - Cycles
+      summary: Edit a cycle
+      description: >-
+        Any field can change while the cycle is a draft; once active only `name`,
+        `submission_due` and `review_due` can. Closed cycles cannot change. Requires
+        `appraisal_cycle_admin` write.
+      operationId: handlers.cycles.update_cycle
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/cycle_id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CycleUpdateRequest"
+      responses:
+        "200":
+          description: The updated cycle
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cycle"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /cycles/{cycle_id}/launch:
+    post:
+      tags:
+        - Cycles
+      summary: Launch a cycle, or add people who joined since
+      description: >-
+        Creates an appraisal for every active Employee and Lead in scope who has a published
+        form for their project and role type, pinning the form version and the review chain
+        (Lead then Manager for an Employee, Manager for a Lead). People whose reporting line is
+        incomplete get a `needs_reviewer` appraisal; people without a project or form are
+        listed in `skipped`. Launching an active cycle again only adds newcomers. Requires
+        `appraisal_cycle_admin` write.
+      operationId: handlers.cycles.launch_cycle
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/cycle_id"
+      responses:
+        "200":
+          description: What this launch created and skipped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LaunchResult"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+
+  /cycles/{cycle_id}/close:
+    post:
+      tags:
+        - Cycles
+      summary: Close an active cycle
+      description: Locks every appraisal in the cycle (FR-4). Requires `appraisal_cycle_admin` write.
+      operationId: handlers.cycles.close_cycle
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/cycle_id"
+      responses:
+        "200":
+          description: The closed cycle
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cycle"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /cycles/{cycle_id}/progress:
+    get:
+      tags:
+        - Cycles
+      summary: Progress of a cycle
+      description: >-
+        Counts by status, review level and project, plus appraisals waiting for a reviewer
+        (FR-15). Admins see the whole cycle and who was skipped at launch; Leads and Managers
+        see only the appraisals they review.
+      operationId: handlers.cycles.get_progress
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/cycle_id"
+      responses:
+        "200":
+          description: Progress counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CycleProgress"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /me/appraisals:
+    get:
+      tags:
+        - Appraisals
+      summary: The caller's own appraisals
+      description: Requires `appraisal_self` read.
+      operationId: handlers.appraisals.list_my_appraisals
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - name: cycle_id
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Appraisals, most recent cycle first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AppraisalSummary"
+        "403":
+          $ref: "#/components/responses/Error"
+
+  /reviews/inbox:
+    get:
+      tags:
+        - Reviews
+      summary: Appraisals assigned to the caller for review
+      description: >-
+        `active` (default) lists the appraisals waiting on the caller now; `completed` lists the
+        ones they finished or sent back. Requires `appraisal_review` read.
+      operationId: handlers.reviews.inbox
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - active
+              - completed
+            default: active
+        - name: cycle_id
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Inbox items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/InboxItem"
+        "403":
+          $ref: "#/components/responses/Error"
+
+  /appraisals/{appraisal_id}:
+    get:
+      tags:
+        - Appraisals
+      summary: Get an appraisal
+      description: >-
+        Visible to the person appraised, their reviewers and admins; anyone else gets 403.
+        Answers are filtered by role: a Lead sees the employee's and their own answers, the
+        employee sees reviewers' answers once approved, Managers and admins see everything.
+        `available_actions` lists what the caller can do now.
+      operationId: handlers.appraisals.get_appraisal
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/appraisal_id"
+      responses:
+        "200":
+          description: The appraisal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppraisalDetail"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /appraisals/{appraisal_id}/answers:
+    put:
+      tags:
+        - Appraisals
+      summary: Save answers for the caller's stage
+      description: >-
+        Saves a draft of the employee's fields (while not started, in draft or returned) or of
+        the active reviewer's section. Values are checked for type and limits; required fields
+        are only enforced on submit, hand-off and approval. A null value clears a field.
+      operationId: handlers.appraisals.save_answers
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/appraisal_id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnswersRequest"
+      responses:
+        "200":
+          description: The appraisal with the saved answers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppraisalDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /appraisals/{appraisal_id}/submit:
+    post:
+      tags:
+        - Appraisals
+      summary: Submit the appraisal for review
+      description: >-
+        Checks every required employee field, then activates the first review step: the Lead
+        for an Employee, the Manager for a Lead (FR-10).
+      operationId: handlers.appraisals.submit
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/appraisal_id"
+      responses:
+        "200":
+          description: The submitted appraisal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppraisalDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /appraisals/{appraisal_id}/reviews/complete:
+    post:
+      tags:
+        - Reviews
+      summary: Complete the Lead review and pass the appraisal to the Manager
+      description: >-
+        Only the active Lead reviewer can do this, after filling every required Lead field. It
+        is a hand-off, not an approval.
+      operationId: handlers.reviews.complete_lead_review
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/appraisal_id"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommentRequest"
+      responses:
+        "200":
+          description: The appraisal, now awaiting the Manager
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppraisalDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /appraisals/{appraisal_id}/one-to-one:
+    post:
+      tags:
+        - Reviews
+      summary: Record the one-to-one discussion
+      description: >-
+        Only the active Manager reviewer can record it; `held_at` defaults to now and cannot be
+        in the future. Required before approval unless the cycle turned it off.
+      operationId: handlers.reviews.record_one_to_one
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/appraisal_id"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OneToOneRequest"
+      responses:
+        "200":
+          description: The appraisal with the one-to-one recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppraisalDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /appraisals/{appraisal_id}/request-changes:
+    post:
+      tags:
+        - Reviews
+      summary: Send the appraisal back to the employee with feedback
+      description: >-
+        The active reviewer, Lead or Manager, returns the appraisal. The round is kept as
+        history and a new round starts from the employee's answers; resubmitting restarts the
+        whole review chain (assumption pending OQ-6).
+      operationId: handlers.reviews.request_changes
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/appraisal_id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeedbackRequest"
+      responses:
+        "200":
+          description: The returned appraisal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppraisalDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /appraisals/{appraisal_id}/approve:
+    post:
+      tags:
+        - Reviews
+      summary: Approve the appraisal (final)
+      description: >-
+        Only the active Manager reviewer, after the Lead step (if any) is complete, the
+        one-to-one is recorded and every required Manager field is filled. The appraisal then
+        becomes read-only (FR-13, FR-14).
+      operationId: handlers.reviews.approve
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/appraisal_id"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommentRequest"
+      responses:
+        "200":
+          description: The approved appraisal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppraisalDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /appraisals/{appraisal_id}/reviewer:
+    patch:
+      tags:
+        - Reviews
+      summary: Assign or replace the Lead or Manager reviewer
+      description: >-
+        Admins fix incomplete or outdated reporting lines. The new reviewer must be an active
+        user with the matching role type and not the person appraised. A step already completed
+        in the current round cannot be reassigned. Requires `appraisal_cycle_admin` write.
+      operationId: handlers.reviews.reassign_reviewer
+      parameters:
+        - $ref: "#/components/parameters/caller_id"
+        - $ref: "#/components/parameters/appraisal_id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReassignRequest"
+      responses:
+        "200":
+          description: The appraisal with its new reviewer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppraisalDetail"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+
+components:
+  parameters:
+    caller_id:
+      name: caller_id
+      in: header
+      required: true
+      description: HPH user id of the caller, matching the bearer token.
+      schema:
+        type: integer
+    cycle_id:
+      name: cycle_id
+      in: path
+      required: true
+      schema:
+        type: integer
+    appraisal_id:
+      name: appraisal_id
+      in: path
+      required: true
+      schema:
+        type: integer
+
+  responses:
+    Error:
+      description: Request rejected; see `code` and `message`
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+
+  schemas:
+    ErrorMessage:
+      type: object
+      properties:
+        data:
+          type: object
+          nullable: true
+          description: Detail such as `errors`, a list of `{path, message}` per invalid field.
+        message:
+          type: string
+        success:
+          type: boolean
+        code:
+          type: string
+          example: FAILED_PRECONDITION
+
+    CycleStatus:
+      type: string
+      enum:
+        - draft
+        - active
+        - closed
+
+    CycleScope:
+      type: string
+      enum:
+        - organization
+        - project
+
+    CycleFrequency:
+      type: string
+      enum:
+        - quarterly
+        - half_yearly
+        - annual
+        - custom
+
+    AppraisalStatus:
+      type: string
+      enum:
+        - not_started
+        - draft
+        - awaiting_review
+        - changes_requested
+        - approved
+        - needs_reviewer
+
+    ReviewStage:
+      type: string
+      enum:
+        - lead
+        - manager
+
+    Cycle:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        scope:
+          $ref: "#/components/schemas/CycleScope"
+        project_id:
+          type: integer
+          nullable: true
+        frequency:
+          $ref: "#/components/schemas/CycleFrequency"
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        submission_due:
+          type: string
+          format: date
+        review_due:
+          type: string
+          format: date
+        require_one_to_one:
+          type: boolean
+        status:
+          $ref: "#/components/schemas/CycleStatus"
+        created_at:
+          type: string
+          format: date-time
+        launched_at:
+          type: string
+          format: date-time
+          nullable: true
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+        launch_summary:
+          type: object
+          nullable: true
+          description: Admins only. Counts and the people skipped at the latest launch.
+
+    CycleCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - scope
+        - start_date
+        - end_date
+        - submission_due
+        - review_due
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scope:
+          $ref: "#/components/schemas/CycleScope"
+        project_id:
+          type: integer
+          nullable: true
+        frequency:
+          $ref: "#/components/schemas/CycleFrequency"
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        submission_due:
+          type: string
+          format: date
+        review_due:
+          type: string
+          format: date
+        require_one_to_one:
+          type: boolean
+          default: true
+
+    CycleUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        scope:
+          $ref: "#/components/schemas/CycleScope"
+        project_id:
+          type: integer
+          nullable: true
+        frequency:
+          $ref: "#/components/schemas/CycleFrequency"
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        submission_due:
+          type: string
+          format: date
+        review_due:
+          type: string
+          format: date
+        require_one_to_one:
+          type: boolean
+
+    SkippedParticipant:
+      type: object
+      properties:
+        user_id:
+          type: integer
+        name:
+          type: string
+        reason:
+          type: string
+
+    LaunchResult:
+      type: object
+      properties:
+        cycle:
+          $ref: "#/components/schemas/Cycle"
+        created:
+          type: integer
+        needs_reviewer:
+          type: integer
+        skipped:
+          type: array
+          items:
+            $ref: "#/components/schemas/SkippedParticipant"
+
+    CycleProgress:
+      type: object
+      properties:
+        cycle_id:
+          type: integer
+        total:
+          type: integer
+        by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        awaiting_review_by_stage:
+          type: object
+          properties:
+            lead:
+              type: integer
+            manager:
+              type: integer
+        by_project:
+          type: array
+          items:
+            type: object
+            properties:
+              project_id:
+                type: integer
+                nullable: true
+              total:
+                type: integer
+              by_status:
+                type: object
+                additionalProperties:
+                  type: integer
+        needs_reviewer:
+          type: array
+          items:
+            type: object
+            properties:
+              appraisal_id:
+                type: integer
+              user_id:
+                type: integer
+              employee_name:
+                type: string
+              reason:
+                type: string
+                nullable: true
+        skipped_at_launch:
+          type: array
+          description: Admins only.
+          items:
+            $ref: "#/components/schemas/SkippedParticipant"
+
+    CycleBrief:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/CycleStatus"
+        submission_due:
+          type: string
+          format: date
+        review_due:
+          type: string
+          format: date
+
+    AppraisalSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        cycle:
+          $ref: "#/components/schemas/CycleBrief"
+        user_id:
+          type: integer
+        employee_name:
+          type: string
+        employee_emp_id:
+          type: string
+          nullable: true
+        project_id:
+          type: integer
+          nullable: true
+        role_type_code:
+          type: string
+          enum:
+            - employee
+            - lead
+        status:
+          $ref: "#/components/schemas/AppraisalStatus"
+        current_stage:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/ReviewStage"
+        current_reviewer_user_id:
+          type: integer
+          nullable: true
+        current_reviewer_name:
+          type: string
+          nullable: true
+        submitted_at:
+          type: string
+          format: date-time
+          nullable: true
+        approved_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ReviewStep:
+      type: object
+      properties:
+        id:
+          type: integer
+        attempt:
+          type: integer
+        sequence_no:
+          type: integer
+        stage:
+          $ref: "#/components/schemas/ReviewStage"
+        reviewer_user_id:
+          type: integer
+        reviewer_name:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - pending
+            - active
+            - completed
+            - returned
+            - cancelled
+        activated_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    StageAnswers:
+      type: object
+      description: Answers keyed by stage (`employee`, `lead`, `manager`), then by field key.
+      additionalProperties:
+        type: object
+        additionalProperties: true
+
+    Comment:
+      type: object
+      properties:
+        id:
+          type: integer
+        attempt:
+          type: integer
+        stage:
+          $ref: "#/components/schemas/ReviewStage"
+        kind:
+          type: string
+          enum:
+            - feedback
+            - one_to_one_note
+            - comment
+        author_user_id:
+          type: integer
+        author_name:
+          type: string
+          nullable: true
+        body:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    PersonRef:
+      type: object
+      nullable: true
+      properties:
+        user_id:
+          type: integer
+        name:
+          type: string
+          nullable: true
+
+    AppraisalDetail:
+      allOf:
+        - $ref: "#/components/schemas/AppraisalSummary"
+        - type: object
+          properties:
+            form:
+              type: object
+              properties:
+                form_id:
+                  type: integer
+                version_id:
+                  type: integer
+                name:
+                  type: string
+                definition:
+                  type: object
+                  additionalProperties: true
+                  description: The pinned form definition, as served by the Form Builder.
+            review_attempt:
+              type: integer
+            lead:
+              $ref: "#/components/schemas/PersonRef"
+            manager:
+              $ref: "#/components/schemas/PersonRef"
+            needs_reviewer_reason:
+              type: string
+              nullable: true
+            one_to_one_held_at:
+              type: string
+              format: date-time
+              nullable: true
+            review_chain:
+              type: array
+              items:
+                $ref: "#/components/schemas/ReviewStep"
+            answers:
+              $ref: "#/components/schemas/StageAnswers"
+            comments:
+              type: array
+              items:
+                $ref: "#/components/schemas/Comment"
+            previous_attempts:
+              type: array
+              items:
+                type: object
+                properties:
+                  attempt:
+                    type: integer
+                  answers:
+                    $ref: "#/components/schemas/StageAnswers"
+                  review_chain:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ReviewStep"
+            available_actions:
+              type: array
+              items:
+                type: string
+                enum:
+                  - save_answers
+                  - submit
+                  - request_changes
+                  - complete_lead_review
+                  - record_one_to_one
+                  - approve
+                  - reassign_reviewer
+
+    InboxItem:
+      type: object
+      properties:
+        appraisal_id:
+          type: integer
+        cycle:
+          $ref: "#/components/schemas/CycleBrief"
+        user_id:
+          type: integer
+        employee_name:
+          type: string
+        employee_emp_id:
+          type: string
+          nullable: true
+        project_id:
+          type: integer
+          nullable: true
+        role_type_code:
+          type: string
+        stage:
+          $ref: "#/components/schemas/ReviewStage"
+        step_status:
+          type: string
+        appraisal_status:
+          $ref: "#/components/schemas/AppraisalStatus"
+        attempt:
+          type: integer
+        submitted_at:
+          type: string
+          format: date-time
+          nullable: true
+        activated_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        one_to_one_held_at:
+          type: string
+          format: date-time
+          nullable: true
+        is_actionable:
+          type: boolean
+
+    AnswersRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - answers
+      properties:
+        answers:
+          type: object
+          additionalProperties: true
+          description: Field key to value for the caller's stage; null clears a value.
+
+    CommentRequest:
+      type: object
+      # Connexion 2 validates a missing optional body as null; nullable lets it through.
+      nullable: true
+      additionalProperties: false
+      properties:
+        comment:
+          type: string
+          nullable: true
+          maxLength: 5000
+
+    OneToOneRequest:
+      type: object
+      # Connexion 2 validates a missing optional body as null; nullable lets it through.
+      nullable: true
+      additionalProperties: false
+      properties:
+        held_at:
+          type: string
+          format: date-time
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+          maxLength: 5000
+
+    FeedbackRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - feedback
+      properties:
+        feedback:
+          type: string
+          minLength: 1
+          maxLength: 5000
+
+    ReassignRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - stage
+        - reviewer_user_id
+      properties:
+        stage:
+          $ref: "#/components/schemas/ReviewStage"
+        reviewer_user_id:
+          type: integer
