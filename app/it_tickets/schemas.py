@@ -23,6 +23,13 @@ class TicketQuerySchema(Schema):
     page_size = fields.Integer(load_default=25, data_key="pageSize", validate=validate.Range(min=1, max=5000))
 
 
+class IdleTimeQuerySchema(TicketQuerySchema):
+    """Ticket filters plus the record-date window and grouping for idle hours lost to tickets."""
+    idle_from = fields.Date(data_key="idleFrom", load_default=None)
+    idle_to = fields.Date(data_key="idleTo", load_default=None)
+    group = fields.String(load_default="day", validate=validate.OneOf(("day", "week")))
+
+
 class TicketCreateSchema(Schema):
     practice_id = fields.Integer(required=True, data_key="practiceId")
     jira_key = fields.String(required=True, data_key="jiraKey", validate=validate.Length(min=1, max=32))
