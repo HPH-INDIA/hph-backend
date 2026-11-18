@@ -57,7 +57,7 @@ services:
       - key: EMAIL_HOST_PASSWORD
         value: ""
       - key: DEFAULT_FROM_EMAIL
-        value: noreply@vitalysehealth.local
+        value: system@humanpoweredhealth.com
       - key: EMAIL_SUPPRESS_SEND
         value: "true"
       - key: EMAIL_VALIDATE_CONFIG

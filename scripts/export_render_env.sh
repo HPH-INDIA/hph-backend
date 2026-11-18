@@ -39,7 +39,7 @@ trap 'rm -f "${temporary_path}"' EXIT
   printf 'EMAIL_USE_SSL=false\n'
   printf 'EMAIL_HOST_USER=\n'
   printf 'EMAIL_HOST_PASSWORD=\n'
-  printf 'DEFAULT_FROM_EMAIL=noreply@vitalysehealth.local\n'
+  printf 'DEFAULT_FROM_EMAIL=system@humanpoweredhealth.com\n'
   printf 'EMAIL_SUPPRESS_SEND=true\n'
   printf 'EMAIL_VALIDATE_CONFIG=false\n'
   printf 'FRONTEND_LOGIN_URL=https://hph.onrender.com/login\n'
