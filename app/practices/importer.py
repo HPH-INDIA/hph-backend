@@ -10,7 +10,9 @@ from app.cohorts.progression import business_today
 from app.extensions import db
 from app.it_tickets.names import NameResolver, split_names
 from app.practices.models import ACCESS_STATUSES, Practice, PracticeAssignment, practice_name_key
-from app.practices.services import clean_tin, create_practice, link_all_kairon_records, scoped_practices
+from app.practices.services import (
+    build_practice, clean_tin, created_status_change, default_project_id, link_all_kairon_records, scoped_practices,
+)
 
 _ACCESS_BY_KEY = {status.lower(): status for status in ACCESS_STATUSES}
 
@@ -65,10 +67,10 @@ def _assignments_for(row):
 
 def _analyse(actor, rows, mappings):
     resolver = NameResolver(actor, mappings)
-    existing = scoped_practices(actor)
-    by_tin = {p.tin: p for p in existing.filter(Practice.tin.isnot(None)).all()}
-    by_key = {}
-    for practice in existing.all():
+    by_tin, by_key = {}, {}
+    for practice in scoped_practices(actor).order_by(Practice.id.asc()).all():
+        if practice.tin:
+            by_tin[practice.tin] = practice
         by_key.setdefault(practice.name_key, practice)
     seen_tin, seen_key = {}, {}  # earlier rows of this same file
     analysed, unmatched = [], []
@@ -118,16 +120,27 @@ def _fields(row):
     }
 
 
-def _update_practice(actor, practice, values):
+def _update_practice(actor, practice, values, tin_owners):
+    """tin_owners: TIN -> the practice holding it, across every project, kept current as the import runs."""
     for field, value in values.items():
         if field == "tin":
             tin = clean_tin(value)
-            if tin and tin != practice.tin and not Practice.query.filter(Practice.tin == tin, Practice.id != practice.id).first():
+            if tin and tin != practice.tin and tin not in tin_owners:
+                tin_owners.pop(practice.tin, None)
+                tin_owners[tin] = practice
                 practice.tin = tin
         elif value is not None:
             setattr(practice, field, value)
     practice.name_key = practice_name_key(practice.name)
     practice.updated_by_id = actor.id
+
+
+def _tin_owners(analysed):
+    """One query for every TIN the file mentions, including practices outside the importer's scope."""
+    tins = {clean_tin(item["_row"].get("tin")) for item in analysed if item["action"] != "error"} - {None}
+    if not tins:
+        return {}
+    return {practice.tin: practice for practice in Practice.query.filter(Practice.tin.in_(tins)).all()}
 
 
 def commit_practice_import(actor, rows, mappings):
@@ -138,25 +151,36 @@ def commit_practice_import(actor, rows, mappings):
     analysed, _ = _analyse(actor, rows, mappings)
     result = {"created": 0, "updated": 0, "assignmentsCreated": 0, "assignmentsUpdated": 0, "skipped": 0}
     today = business_today()
-    by_row = {}
-    for item in analysed:
-        if item["action"] == "error":
-            result["skipped"] += 1
-            continue
-        values = _fields(item["_row"])
-        practice = item["_match"] or by_row.get(item["duplicateOfRow"])
-        if practice is None:
-            tin = clean_tin(values["tin"])
-            if tin and Practice.query.filter(Practice.tin == tin).first() is not None:
-                values["tin"] = None  # TIN belongs to a practice outside this user's scope
-            practice = create_practice(actor, values, commit=False, link_kairon=False)
-            result["created"] += 1
-        else:
-            _update_practice(actor, practice, values)
-            if item["_match"] is not None and item["duplicateOfRow"] is None:
-                result["updated"] += 1
-        by_row[item["rowNumber"]] = practice
-        item["_practice"] = practice
+    # A fixed number of queries however long the file is: practices are built
+    # in memory (no autoflush per row) and inserted together in one flush.
+    with db.session.no_autoflush:
+        tin_owners = _tin_owners(analysed)
+        project_id = default_project_id(actor)
+        by_row, created = {}, []
+        for item in analysed:
+            if item["action"] == "error":
+                result["skipped"] += 1
+                continue
+            values = _fields(item["_row"])
+            practice = item["_match"] or by_row.get(item["duplicateOfRow"])
+            if practice is None:
+                tin = clean_tin(values["tin"])
+                if tin and tin in tin_owners:
+                    values["tin"] = None  # TIN belongs to a practice outside this user's scope
+                practice = build_practice(actor, values, project_id=project_id)
+                if practice.tin:
+                    tin_owners[practice.tin] = practice
+                db.session.add(practice)
+                created.append(practice)
+                result["created"] += 1
+            else:
+                _update_practice(actor, practice, values, tin_owners)
+                if item["_match"] is not None and item["duplicateOfRow"] is None:
+                    result["updated"] += 1
+            by_row[item["rowNumber"]] = practice
+            item["_practice"] = practice
+    db.session.flush()
+    db.session.add_all([created_status_change(actor, practice) for practice in created])
 
     practice_ids = {item["_practice"].id for item in analysed if item.get("_practice") is not None}
     existing = {(a.practice_id, a.user_id): a for a in

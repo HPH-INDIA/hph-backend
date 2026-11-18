@@ -167,18 +167,30 @@ def link_all_kairon_records():
         "AND lower(regexp_replace(btrim(k.practice), '\\s+', ' ', 'g')) = p.name_key"))
 
 
-def create_practice(user, data, *, commit=True, link_kairon=True):
+def build_practice(user, data, *, project_id=None):
+    """A new, unsaved practice. No queries when project_id is given, so bulk
+    callers can build many and flush once; TIN uniqueness is the caller's job."""
     status = data.get("status") or "Active"
     if status not in PRACTICE_STATUSES:
         abort(422, message=f"Status must be one of {', '.join(PRACTICE_STATUSES)}.")
-    practice = Practice(project_id=default_project_id(user), created_by_id=user.id, updated_by_id=user.id,
+    practice = Practice(project_id=project_id if project_id is not None else default_project_id(user),
+                        created_by_id=user.id, updated_by_id=user.id,
                         status=status, status_effective_from=business_today())
     _apply_fields(practice, data)
+    return practice
+
+
+def created_status_change(user, practice):
+    return PracticeStatusChange(practice_id=practice.id, from_status=None, to_status=practice.status,
+                                effective_from=practice.status_effective_from, reason="Created", actor_id=user.id)
+
+
+def create_practice(user, data, *, commit=True, link_kairon=True):
+    practice = build_practice(user, data)
     _check_unique_tin(practice.tin)
     db.session.add(practice)
     db.session.flush()
-    db.session.add(PracticeStatusChange(practice_id=practice.id, from_status=None, to_status=status,
-                                        effective_from=practice.status_effective_from, reason="Created", actor_id=user.id))
+    db.session.add(created_status_change(user, practice))
     if link_kairon:
         link_kairon_records(practice)
     if commit:
