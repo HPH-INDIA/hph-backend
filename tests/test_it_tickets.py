@@ -423,3 +423,38 @@ def test_practice_import_merges_duplicate_rows_and_people(app, world):
     assert paper.emr == "eCW" and [a.user_id for a in paper.assignments] == [coder.id]
     temp = Practice.query.filter_by(tin="222222222").one()
     assert temp.notes == "same name, no TIN" and len(temp.assignments) == 1
+
+
+def test_practice_import_query_count_does_not_grow_with_rows(app, world):
+    """A full workbook (~330 rows) timed out behind the 60 s proxy because
+    every row cost several round trips. The commit must use a fixed number
+    of statements however many practices it creates."""
+    from sqlalchemy import event
+
+    from app.practices.models import PracticeStatusChange
+
+    coder, qa = world["users"]["coder"], world["users"]["qa"]
+    manager = login(app, world["users"]["manager"])
+    existing_tin = world["practice"].tin
+    rows = [{"tin": f"5{index:08d}", "practice": f"Bulk Clinic {index}", "worktype": "Foundations",
+             "coder1lr": f"{coder.first_name} {coder.last_name}", "qa2lr": f"{qa.first_name} {qa.last_name}",
+             "coder1lrAccess": "Access Live", "qa2lrAccess": "Access Live"} for index in range(300)]
+    rows.append({"tin": existing_tin, "practice": "Lakeview renamed in file", "emr": "Epic"})
+
+    statements = []
+    engine = db.engine
+    listener = lambda *args: statements.append(args[2])  # noqa: E731
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        status, result = manager.post("/api/practices/imports/commit", {"rows": rows})
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+
+    assert status == 200, result
+    assert result["data"]["created"] == 300 and result["data"]["updated"] == 1
+    assert result["data"]["assignmentsCreated"] == 600
+    assert len(statements) < 40, f"{len(statements)} statements for 301 rows"
+    assert Practice.query.filter(Practice.name.like("Bulk Clinic %")).count() == 300
+    assert PracticeStatusChange.query.join(Practice).filter(Practice.name.like("Bulk Clinic %"),
+                                                             PracticeStatusChange.reason == "Created").count() == 300
+    assert db.session.get(Practice, world["practice"].id).emr == "Epic"
