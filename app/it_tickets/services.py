@@ -1,6 +1,6 @@
 """IT tickets: one record per Jira ticket. See app/it_tickets/access.py for visibility."""
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from flask_smorest import abort
@@ -16,6 +16,7 @@ from app.it_tickets.keys import normalize_jira_key
 from app.it_tickets.models import IssueCategory, ItTicket, ItTicketEvent, ManualRecordTicket
 from app.manual_daily_records.models import ManualDailyRecord
 from app.practices.models import Practice, PracticeAssignment
+from app.roles.models import Role
 from app.users.models import User
 
 OWNER_FIELDS = ("issue_category_id", "hph_status_note", "charts_available", "not_in_kairon", "follow_up_issue",
@@ -178,6 +179,112 @@ def idle_days_without_ticket(user_ids):
         if full:
             counts[record.user_id] += 1
     return dict(counts)
+
+
+MAX_IDLE_RANGE_DAYS = 366
+
+
+def _week_start(day):
+    return day - timedelta(days=day.weekday())
+
+
+def _hours(value):
+    return round(float(value), 2)
+
+
+def idle_time(user, args):
+    """Idle hours coders linked to IT tickets in their daily records - the
+    productivity lost to tickets - by day or week (weeks start on Monday).
+
+    Only lead-approved records count; hours on records still awaiting review
+    are returned separately. Ticket filters (role, person, practice, category,
+    status, opened dates, search) narrow which tickets' hours are included.
+    """
+    today = business_today()
+    start = args.get("idle_from") or _month_start(today)
+    end = args.get("idle_to") or today
+    if start > end:
+        abort(422, message="The start date must be on or before the end date.")
+    if (end - start).days >= MAX_IDLE_RANGE_DAYS:
+        abort(422, message="Choose a range of a year or less.")
+    window_start = min(start, _month_start(today), _week_start(today))
+    window_end = max(end, today)
+
+    ticket_ids = filtered_query(user, args).with_entities(ItTicket.id)
+    rows = db.session.execute(
+        db.select(ManualDailyRecord.record_date, ManualDailyRecord.status, ManualDailyRecord.user_id,
+                  ManualRecordTicket.ticket_id, ManualRecordTicket.hours, ItTicket.practice_id)
+        .join(ManualDailyRecord, ManualDailyRecord.id == ManualRecordTicket.manual_record_id)
+        .join(ItTicket, ItTicket.id == ManualRecordTicket.ticket_id)
+        .where(ManualRecordTicket.ticket_id.in_(ticket_ids),
+               ManualDailyRecord.record_date >= window_start, ManualDailyRecord.record_date <= window_end,
+               ManualDailyRecord.status.in_(("approved", "pending")))).all()
+
+    roles = {u.id: ticket_role(u) for u in User.query.options(db.selectinload(User.role).selectinload(Role.role_type))
+             .filter(User.id.in_({r.user_id for r in rows})).all()} if rows else {}
+    practice_names = dict(db.session.execute(
+        db.select(Practice.id, Practice.name).where(Practice.id.in_({r.practice_id for r in rows}))).all()) if rows else {}
+
+    def bucket():
+        return {"hours": Decimal(0), "people": set(), "tickets": set(), "days": set(),
+                "byRole": {"coder": Decimal(0), "qa": Decimal(0)}, "practices": Counter()}
+
+    def add(target, row):
+        target["hours"] += row.hours
+        target["people"].add(row.user_id)
+        target["tickets"].add(row.ticket_id)
+        target["days"].add(row.record_date)
+        role = roles.get(row.user_id)
+        if role in target["byRole"]:
+            target["byRole"][role] += row.hours
+        target["practices"][row.practice_id] += row.hours
+
+    def out(target):
+        top = target["practices"].most_common(1)
+        return {"hours": _hours(target["hours"]), "people": len(target["people"]), "tickets": len(target["tickets"]),
+                "days": len(target["days"]), "byRole": {k: _hours(v) for k, v in target["byRole"].items()},
+                "topPractice": {"id": top[0][0], "name": practice_names.get(top[0][0]), "hours": _hours(top[0][1])} if top else None}
+
+    totals, this_week, this_month, periods = bucket(), bucket(), bucket(), defaultdict(bucket)
+    pending = Decimal(0)
+    week_start, month_start = _week_start(today), _month_start(today)
+    for row in rows:
+        if row.status != "approved":
+            if start <= row.record_date <= end:
+                pending += row.hours
+            continue
+        if week_start <= row.record_date <= today:
+            add(this_week, row)
+        if month_start <= row.record_date <= today:
+            add(this_month, row)
+        if start <= row.record_date <= end:
+            add(totals, row)
+            key = row.record_date if args.get("group") != "week" else _week_start(row.record_date)
+            add(periods[key], row)
+
+    # Full idle days (approved) with no ticket linked, for the same people.
+    people = apply_user_scope(ManualDailyRecord.query, ManualDailyRecord.user_id, user)
+    people = role_filter(people, ManualDailyRecord.user_id, args.get("role"))
+    if args.get("user_id"):
+        people = people.filter(ManualDailyRecord.user_id.in_(args["user_id"]))
+    unlinked = people.filter(
+        ManualDailyRecord.status == "approved",
+        ManualDailyRecord.record_date >= start, ManualDailyRecord.record_date <= end,
+        ManualDailyRecord.id.notin_(db.select(ManualRecordTicket.manual_record_id))).all()
+    without_ticket = sum(1 for record in unlinked if is_full_idle({
+        "tech_issues_downtime_hours": record.tech_issues_downtime_hours,
+        "no_inventory_idle_time_hours": record.no_inventory_idle_time_hours,
+        "leave_hours": record.leave_hours})[0])
+
+    week = args.get("group") == "week"
+    return {
+        "fromDate": start.isoformat(), "toDate": end.isoformat(), "group": "week" if week else "day",
+        "totals": out(totals), "thisWeek": out(this_week), "thisMonth": out(this_month),
+        "pendingHours": _hours(pending), "fullIdleDaysWithoutTicket": without_ticket,
+        "rows": [{"periodStart": (max(key, start) if week else key).isoformat(),
+                  "periodEnd": (min(key + timedelta(days=6), end) if week else key).isoformat(),
+                  **out(value)} for key, value in sorted(periods.items(), reverse=True)],
+    }
 
 
 def summary(user, args):

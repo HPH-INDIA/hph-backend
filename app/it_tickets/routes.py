@@ -6,7 +6,7 @@ from app.extensions import db
 from app.it_tickets import bp, services
 from app.it_tickets.models import IssueCategory
 from app.it_tickets.schemas import (
-    CategoryCreateSchema, CategoryQuerySchema, CategoryUpdateSchema, DataEnvelopeSchema, TicketCreateSchema,
+    CategoryCreateSchema, CategoryQuerySchema, CategoryUpdateSchema, DataEnvelopeSchema, IdleTimeQuerySchema, TicketCreateSchema,
     TicketDeleteSchema, TicketImportSchema, TicketQuerySchema, TicketUpdateSchema,
 )
 from flask_smorest import abort
@@ -57,6 +57,16 @@ for _path, _fn, _message in (
         return _View
 
     bp.route(_path)(_make(_fn, _message))
+
+
+@bp.route("/it-tickets/idle-time")
+class TicketIdleTime(MethodView):
+    @require_feature("it_tickets", access="read")
+    @require_role_types(*MANAGERS)
+    @bp.arguments(IdleTimeQuerySchema, location="query")
+    @bp.response(200, DataEnvelopeSchema)
+    def get(self, args):
+        return ok(services.idle_time(g.user, args), "Idle time retrieved.")
 
 
 @bp.route("/it-tickets/filter-options")

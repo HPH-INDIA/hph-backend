@@ -585,3 +585,55 @@ def test_ticket_import_suggests_and_applies_practice_mappings(app, world):
     tickets = {t.jira_key: t.practice_id for t in ItTicket.query.filter(ItTicket.jira_key.like("VTEC-3200%")).all()}
     assert tickets["VTEC-32001"] == world["other"].id and tickets["VTEC-32002"] == world["practice"].id
     assert Practice.query.filter_by(name="Totally Different Clinic").count() == 1
+
+
+def test_idle_time_lost_to_tickets_by_day_and_week(app, world):
+    """Managers see the idle hours coders linked to tickets: approved records
+    only (pending shown apart), by day or Monday-start week, with filters."""
+    from app.manual_daily_records.models import ManualDailyRecord
+
+    today = business_today()
+    d1, d2 = today, today - dt.timedelta(days=8)
+    opened = (d2 - dt.timedelta(days=1)).isoformat()
+    coder, qa, coder2 = (login(app, world["users"][k]) for k in ("coder", "qa", "coder2"))
+    _, t1 = log_ticket(coder, world, key="VTEC-801", openedOn=opened)
+    _, t2 = log_ticket(coder, world, key="VTEC-802", practice=world["other"], openedOn=opened)
+    _, t3 = log_ticket(coder2, world, key="VTEC-803", openedOn=opened)
+    t1, t2, t3 = (t["data"]["id"] for t in (t1, t2, t3))
+    assert _manual(coder, d1, [{"ticketId": t1, "hours": "5"}, {"ticketId": t2, "hours": "3"}])[0] == 200
+    assert _manual(coder, d2, [{"ticketId": t1, "hours": "8"}])[0] == 200
+    assert _manual(coder2, d1, [{"ticketId": t3, "hours": "8"}])[0] == 200      # stays pending
+    assert _manual(qa, d1, idle="2", downtime="0")[0] == 200                   # a lead's record is approved on save
+    coder_id, qa_id = world["users"]["coder"].id, world["users"]["qa"].id
+    ManualDailyRecord.query.filter_by(user_id=coder_id).update({"status": "approved"})
+    # An old-style full idle day: approved, no ticket linked.
+    ManualDailyRecord.query.filter_by(user_id=qa_id).update({"no_inventory_idle_time_hours": 6, "tech_issues_downtime_hours": 2})
+    db.session.commit()
+
+    manager = login(app, world["users"]["manager"])
+    base = f"/api/it-tickets/idle-time?idleFrom={d2.isoformat()}&idleTo={d1.isoformat()}"
+    status, body = manager.get(base)
+    assert status == 200, body
+    data = body["data"]
+    assert data["totals"]["hours"] == 16 and data["totals"]["people"] == 1 and data["totals"]["tickets"] == 2
+    assert data["totals"]["days"] == 2 and data["totals"]["byRole"] == {"coder": 16, "qa": 0}
+    assert data["pendingHours"] == 8 and data["fullIdleDaysWithoutTicket"] == 1
+    assert [(r["periodStart"], r["hours"]) for r in data["rows"]] == [(d1.isoformat(), 8), (d2.isoformat(), 8)]
+    assert data["rows"][0]["topPractice"] == {"id": world["practice"].id, "name": "Lakeview Family Medicine", "hours": 5}
+    week_start = today - dt.timedelta(days=today.weekday())
+    assert data["thisWeek"]["hours"] == 8 and data["thisWeek"]["people"] == 1
+    assert data["thisMonth"]["hours"] == (16 if d2 >= today.replace(day=1) else 8)
+
+    status, body = manager.get(base + "&group=week")
+    weeks = body["data"]["rows"]
+    assert [w["periodStart"] for w in weeks] == [week_start.isoformat(), d2.isoformat()]
+    assert [w["hours"] for w in weeks] == [8, 8] and weeks[1]["periodEnd"] == (
+        d2 - dt.timedelta(days=d2.weekday()) + dt.timedelta(days=6)).isoformat()
+
+    qa_view = manager.get(base + "&role=qa")[1]["data"]
+    assert qa_view["totals"]["hours"] == 0 and qa_view["pendingHours"] == 0 and qa_view["fullIdleDaysWithoutTicket"] == 1
+    assert manager.get(base + "&role=coder")[1]["data"]["fullIdleDaysWithoutTicket"] == 0
+    assert manager.get(base + f"&practiceId={world['other'].id}")[1]["data"]["totals"]["hours"] == 3
+
+    assert manager.get(f"/api/it-tickets/idle-time?idleFrom={d1.isoformat()}&idleTo={d2.isoformat()}")[0] == 422
+    assert coder.get(base)[0] == 403
