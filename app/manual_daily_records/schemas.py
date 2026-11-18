@@ -15,6 +15,11 @@ class ManualMeetingSchema(Schema):
                            validate=validate.Range(min=Decimal("0.01"), max=MAX_HOURS_PER_FIELD))
 
 
+class ManualTicketLinkSchema(Schema):
+    ticket_id = fields.Integer(required=True, data_key="ticketId")
+    hours = fields.Decimal(required=True, places=2, validate=validate.Range(min=Decimal("0.01"), max=MAX_HOURS_PER_FIELD))
+
+
 class ManualDailyRecordUpsertSchema(Schema):
     """POST /api/manual-daily-records body. There's no user field - the
     record is always saved against whoever is logged in (see
@@ -42,6 +47,9 @@ class ManualDailyRecordUpsertSchema(Schema):
     )
     meetings = fields.List(fields.Nested(ManualMeetingSchema), required=False,
                            validate=validate.Length(max=20))
+    # IT tickets that caused the day's idle/downtime hours. Required when the
+    # whole available day is idle - see services.link_record_tickets.
+    tickets = fields.List(fields.Nested(ManualTicketLinkSchema), required=False, validate=validate.Length(max=20))
 
     @validates_schema
     def derive_production_count(self, data, **kwargs):
@@ -116,6 +124,7 @@ class ManualDailyRecordSchema(Schema):
     meeting_engagement_hours = fields.Decimal(dump_only=True, as_string=True, data_key="meetingEngagementHours")
     meeting_type = fields.String(dump_only=True, allow_none=True, data_key="meetingType")
     meetings = fields.Method("get_meetings", dump_only=True)
+    tickets = fields.Method("get_tickets", dump_only=True)
     status = fields.String(dump_only=True)
     reviewed_by_id = fields.Integer(dump_only=True, allow_none=True, data_key="reviewedById")
     reviewed_at = fields.DateTime(dump_only=True, allow_none=True, data_key="reviewedAt")
@@ -129,6 +138,11 @@ class ManualDailyRecordSchema(Schema):
     adjusted_cpd = fields.Decimal(
         dump_only=True, as_string=True, places=2, allow_none=True, data_key="adjustedCpd"
     )
+
+    def get_tickets(self, record):
+        return [{"ticketId": link.ticket_id, "jiraKey": link.ticket.jira_key,
+                 "practiceName": link.ticket.practice.name, "hours": str(link.hours)}
+                for link in getattr(record, "ticket_links", None) or []]
 
     def get_meetings(self, record):
         if record.meetings is not None:
