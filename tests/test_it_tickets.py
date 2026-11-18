@@ -458,3 +458,37 @@ def test_practice_import_query_count_does_not_grow_with_rows(app, world):
     assert PracticeStatusChange.query.join(Practice).filter(Practice.name.like("Bulk Clinic %"),
                                                              PracticeStatusChange.reason == "Created").count() == 300
     assert db.session.get(Practice, world["practice"].id).emr == "Epic"
+
+
+def test_practice_list_query_count_does_not_grow_with_practices(app, world):
+    """After the 334-practice import the list (pageSize=5000) timed out:
+    assignments, users and roles were lazy-loaded per practice."""
+    from sqlalchemy import event
+
+    coder, qa = world["users"]["coder"], world["users"]["qa"]
+    manager = login(app, world["users"]["manager"])
+    project_id = world["practice"].project_id
+    for index in range(120):
+        practice = Practice(name=f"List Clinic {index}", name_key=f"list clinic {index}", tin=f"7{index:08d}",
+                            project_id=project_id, status="Active")
+        db.session.add(practice)
+        db.session.flush()
+        db.session.add_all([PracticeAssignment(practice_id=practice.id, user_id=coder.id, access_status="Access Live"),
+                            PracticeAssignment(practice_id=practice.id, user_id=qa.id, access_status="Access Live")])
+    db.session.commit()
+    db.session.expunge_all()
+
+    statements = []
+    engine = db.engine
+    listener = lambda *args: statements.append(args[2])  # noqa: E731
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        status, body = manager.get("/api/practices?status=Active&status=Inactive&page=1&pageSize=5000")
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+
+    assert status == 200, body
+    listed = [p for p in body["data"]["items"] if p["name"].startswith("List Clinic")]
+    assert len(listed) == 120 and all(len(p["assignments"]) == 2 for p in listed)
+    assert {a["role"] for p in listed for a in p["assignments"]} == {"coder", "qa"}
+    assert len(statements) < 30, f"{len(statements)} statements to list {len(body['data']['items'])} practices"

@@ -111,7 +111,11 @@ def list_practices(user, args):
         query = query.filter(Practice.id.in_(sub))
     total = query.count()
     page, page_size = args.get("page", 1), args.get("page_size", 25)
-    practices = (query.order_by(Practice.priority_rank.asc().nulls_last(), Practice.name_key.asc())
+    # Batch-load assignments and their people (with role) so a page of N
+    # practices costs a few queries, not several per practice.
+    practices = (query.options(db.selectinload(Practice.assignments).selectinload(PracticeAssignment.user)
+                               .selectinload(User.role).selectinload(Role.role_type))
+                 .order_by(Practice.priority_rank.asc().nulls_last(), Practice.name_key.asc())
                  .offset((page - 1) * page_size).limit(page_size).all())
     counts = ticket_counts([p.id for p in practices])
     status_counts = dict(db.session.execute(
