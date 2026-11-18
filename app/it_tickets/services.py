@@ -326,6 +326,79 @@ def idle_time(user, args):
     }
 
 
+TICKET_ONLY_FILTERS = ("status", "access_status", "practice_id", "category_id", "opened_from", "opened_to", "search")
+
+
+def idle_period(period, day):
+    """(first, last) day of the day, Monday-start week or calendar month containing `day`."""
+    if period == "week":
+        start = _week_start(day)
+        return start, start + timedelta(days=6)
+    if period == "month":
+        start = _month_start(day)
+        next_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return start, next_month - timedelta(days=1)
+    return day, day
+
+
+def idle_by_coder(user, args):
+    """Tickets coders linked idle hours to in lead-approved daily records for a
+    day / week / month - one row per ticket with its hours - plus each coder's
+    No ticket - idle hours. Ticket filters narrow the tickets; when any is set,
+    No ticket - idle lines are left out (they have no practice, status or category)."""
+    period = args.get("period") or "day"
+    start, end = idle_period(period, args.get("on") or business_today())
+    ticket_ids = filtered_query(user, args).with_entities(ItTicket.id)
+    window = (ManualDailyRecord.record_date >= start, ManualDailyRecord.record_date <= end)
+    linked = db.session.execute(
+        db.select(ManualRecordTicket.ticket_id, ManualDailyRecord.status,
+                  db.func.sum(ManualRecordTicket.hours), db.func.count(ManualDailyRecord.id))
+        .join(ManualDailyRecord, ManualDailyRecord.id == ManualRecordTicket.manual_record_id)
+        .where(ManualRecordTicket.ticket_id.in_(ticket_ids), *window, ManualDailyRecord.status.in_(("approved", "pending")))
+        .group_by(ManualRecordTicket.ticket_id, ManualDailyRecord.status)).all()
+    approved = {r[0]: (r[2], r[3]) for r in linked if r[1] == "approved"}
+    pending = sum((r[2] for r in linked if r[1] == "pending"), Decimal(0))
+
+    tickets = (ItTicket.query.options(db.joinedload(ItTicket.user).selectinload(User.role).selectinload(Role.role_type),
+                                      db.joinedload(ItTicket.practice), db.joinedload(ItTicket.issue_category))
+               .filter(ItTicket.id.in_(approved)).all()) if approved else []
+    rows = []
+    for item in serialize_many(tickets, user):
+        hours, days = approved[item["id"]]
+        rows.append({**item, "idleHours": _hours(hours), "idleDays": days})
+    rows.sort(key=lambda r: (r["userName"].lower(), -r["idleHours"], r["jiraKey"]))
+
+    no_ticket = []
+    if not any(args.get(key) for key in TICKET_ONLY_FILTERS):
+        people = apply_user_scope(db.select(ManualDailyRecord.id), ManualDailyRecord.user_id, user)
+        people = role_filter(people, ManualDailyRecord.user_id, args.get("role"))
+        if args.get("user_id"):
+            people = people.where(ManualDailyRecord.user_id.in_(args["user_id"]))
+        found = db.session.execute(
+            db.select(ManualDailyRecord.user_id, ManualDailyRecord.status,
+                      db.func.sum(ManualRecordTicket.hours), db.func.count(ManualDailyRecord.id))
+            .join(ManualDailyRecord, ManualDailyRecord.id == ManualRecordTicket.manual_record_id)
+            .join(ItTicket, ItTicket.id == ManualRecordTicket.ticket_id)
+            .where(ItTicket.source == NO_TICKET_SOURCE, ManualDailyRecord.id.in_(people), *window,
+                   ManualDailyRecord.status.in_(("approved", "pending")))
+            .group_by(ManualDailyRecord.user_id, ManualDailyRecord.status)).all()
+        pending += sum((r[2] for r in found if r[1] == "pending"), Decimal(0))
+        owners = {u.id: u for u in User.query.options(db.selectinload(User.role).selectinload(Role.role_type))
+                  .filter(User.id.in_({r[0] for r in found if r[1] == "approved"})).all()}
+        no_ticket = sorted(({"userId": r[0], "userName": full_name(owners[r[0]]), "role": ticket_role(owners[r[0]]),
+                             "idleHours": _hours(r[2]), "idleDays": r[3]} for r in found if r[1] == "approved"),
+                           key=lambda r: r["userName"].lower())
+
+    people_count = len({r["userId"] for r in rows} | {r["userId"] for r in no_ticket})
+    return {
+        "period": period, "fromDate": start.isoformat(), "toDate": end.isoformat(),
+        "rows": rows, "noTicket": no_ticket, "pendingHours": _hours(pending),
+        "totals": {"ticketHours": _hours(sum((r[0] for r in approved.values()), Decimal(0))),
+                   "noTicketHours": round(sum(r["idleHours"] for r in no_ticket), 2),
+                   "people": people_count, "tickets": len(rows)},
+    }
+
+
 def summary(user, args):
     tickets = filtered_query(user, args).all()
     today = business_today()
