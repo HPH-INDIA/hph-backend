@@ -6,6 +6,8 @@ Terminated (which also resolves its open IT tickets, see
 app/practices/services.change_status). Delete is only for a row created by
 mistake that has no tickets.
 """
+import re
+
 from app.extensions import db
 
 PRACTICE_STATUSES = ("Active", "Inactive", "Terminated")
@@ -29,6 +31,19 @@ def _sql_in(values):
 def practice_name_key(name):
     """Case- and whitespace-insensitive matching key for practice names."""
     return " ".join((name or "").split()).lower()
+
+
+_NAME_SUFFIXES = frozenset((
+    "pc", "llc", "pllc", "inc", "md", "mds", "do", "pa", "psc", "ltd", "llp", "lp", "corp", "corporation",
+    "co", "company", "the", "dba", "of", "and", "incorporated",
+))
+
+
+def practice_loose_key(name):
+    """'Northland Family Care PC' and 'NORTHLAND FAMILY CARE' share this key:
+    punctuation and company suffixes are ignored. Same rule as the web app's looseNameKey."""
+    text = (name or "").lower().replace(".", "").replace("&", " and ")
+    return " ".join(word for word in re.sub(r"[^a-z0-9]+", " ", text).split() if word not in _NAME_SUFFIXES)
 
 
 class Practice(db.Model):

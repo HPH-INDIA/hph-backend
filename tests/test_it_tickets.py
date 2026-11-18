@@ -492,3 +492,58 @@ def test_practice_list_query_count_does_not_grow_with_practices(app, world):
     assert len(listed) == 120 and all(len(p["assignments"]) == 2 for p in listed)
     assert {a["role"] for p in listed for a in p["assignments"]} == {"coder", "qa"}
     assert len(statements) < 30, f"{len(statements)} statements to list {len(body['data']['items'])} practices"
+
+
+def test_ticket_import_matches_similar_practice_names(app, world):
+    """'LAKEVIEW FAMILY MEDICINE, PLLC.' in the tracker is the master list's
+    'Lakeview Family Medicine': no duplicate practice is created."""
+    coder = world["users"]["coder"]
+    manager = login(app, world["users"]["manager"])
+    rows = [{"coderName": f"{coder.first_name} {coder.last_name}", "practiceName": "LAKEVIEW FAMILY MEDICINE, PLLC.",
+             "ticketId": "VTEC-31001", "ticketOpenDate": "2026-09-01", "ticketStatus": "In Progress"}]
+    status, preview = manager.post("/api/it-tickets/imports/preview", {"rows": rows})
+    assert status == 200, preview
+    assert preview["data"]["unmatchedPractices"] == []
+    assert preview["data"]["similarPractices"] == [{"nameInFile": "LAKEVIEW FAMILY MEDICINE, PLLC.",
+                                                    "practiceId": world["practice"].id, "practiceName": "Lakeview Family Medicine"}]
+    status, result = manager.post("/api/it-tickets/imports/commit", {"rows": rows})
+    assert status == 200 and result["data"]["practicesCreated"] == 0
+    assert ItTicket.query.filter_by(jira_key="VTEC-31001").one().practice_id == world["practice"].id
+
+
+def test_ticket_import_query_count_does_not_grow_with_rows(app, world):
+    from sqlalchemy import event
+
+    from app.practices.models import PracticeStatusChange
+
+    coder, qa = world["users"]["coder"], world["users"]["qa"]
+    manager = login(app, world["users"]["manager"])
+    rows = []
+    for index in range(150):
+        person = coder if index % 2 else qa
+        rows.append({"coderName": f"{person.first_name} {person.last_name}",
+                     "practiceName": "Lakeview Family Medicine" if index % 3 else f"Tracker Only Clinic {index % 10}",
+                     "issueCategory": "Latency issue", "ticketId": f"VTEC-{40000 + index}", "ticketOpenDate": "2026-08-01",
+                     "ticketStatus": "Resolved" if index % 5 == 0 else "In Progress", "ticketResolvedDate": "2026-09-01"})
+
+    statements = []
+    engine = db.engine
+    listener = lambda *args: statements.append(args[2])  # noqa: E731
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        status, result = manager.post("/api/it-tickets/imports/commit", {"rows": rows})
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+
+    assert status == 200, result
+    assert result["data"] == {"created": 150, "updated": 0, "practicesCreated": 10, "skipped": 0}
+    assert len(statements) < 40, f"{len(statements)} statements for 150 tickets"
+    tracker = Practice.query.filter(Practice.name.like("Tracker Only Clinic %")).all()
+    assert len(tracker) == 10
+    assert PracticeStatusChange.query.filter(PracticeStatusChange.practice_id.in_([p.id for p in tracker])).count() == 10
+    assert ItTicketEvent.query.filter(ItTicketEvent.jira_key.like("VTEC-4%"), ItTicketEvent.action == "imported").count() == 150
+    pairs = {(a.practice_id, a.user_id) for a in PracticeAssignment.query.filter(
+        PracticeAssignment.practice_id.in_([p.id for p in tracker] + [world["practice"].id])).all()}
+    assert (world["practice"].id, coder.id) in pairs and (world["practice"].id, qa.id) in pairs
+    assert all((p.id, coder.id) in pairs or (p.id, qa.id) in pairs for p in tracker)
+    assert ItTicket.query.filter_by(jira_key="VTEC-40000").one().status == "resolved"
