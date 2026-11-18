@@ -711,3 +711,58 @@ def test_idle_time_shows_no_ticket_idle_hours(app, world):
     assert [(r["periodStart"], r["hours"], r["noTicketHours"]) for r in data["rows"]] == [(today.isoformat(), 0, 8)]
     assert data["fullIdleDaysWithoutTicket"] == 0
     assert manager.get(url + "&role=qa")[1]["data"]["totals"]["noTicketHours"] == 0
+
+
+def test_idle_by_coder_lists_tickets_with_idle_hours_by_day_week_and_month(app, world):
+    from app.it_tickets.services import idle_period
+    from app.manual_daily_records.models import ManualDailyRecord
+
+    today = business_today()
+    week_start, week_end = idle_period("week", today)
+    month_start, month_end = idle_period("month", today)
+    assert week_start.weekday() == 0 and (week_end - week_start).days == 6
+    assert month_start.day == 1 and (month_end + dt.timedelta(days=1)).day == 1
+    assert idle_period("month", dt.date(2028, 2, 10)) == (dt.date(2028, 2, 1), dt.date(2028, 2, 29))
+
+    coder, coder2 = login(app, world["users"]["coder"]), login(app, world["users"]["coder2"])
+    other_day = week_start if today != week_start else today + dt.timedelta(days=1)
+    opened = (today - dt.timedelta(days=40)).isoformat()
+    _, t1 = log_ticket(coder, world, key="VTEC-1101", openedOn=opened)
+    _, t2 = log_ticket(coder, world, key="VTEC-1102", practice=world["other"], openedOn=opened)
+    t1, t2 = t1["data"]["id"], t2["data"]["id"]
+    assert _manual(coder, today, [{"ticketId": t1, "hours": "5"}, {"ticketId": t2, "hours": "3"}])[0] == 200
+    if other_day <= today:
+        assert _manual(coder, other_day, [{"ticketId": t1, "hours": "8"}])[0] == 200
+    assert _manual_no_ticket(coder2, today)[0] == 200
+    ManualDailyRecord.query.filter_by(user_id=world["users"]["coder"].id).update({"status": "approved"})
+    db.session.commit()
+
+    manager = login(app, world["users"]["manager"])
+    base = f"/api/it-tickets/idle-by-coder?on={today.isoformat()}"
+    day = manager.get(base + "&period=day")[1]["data"]
+    assert (day["fromDate"], day["toDate"]) == (today.isoformat(), today.isoformat())
+    assert [(r["jiraKey"], r["idleHours"], r["idleDays"]) for r in day["rows"]] == [("VTEC-1101", 5, 1), ("VTEC-1102", 3, 1)]
+    assert day["rows"][0]["practiceName"] == "Lakeview Family Medicine" and "canChangeStatus" in day["rows"][0]
+    assert day["noTicket"] == [] and day["pendingHours"] == 8          # coder2's No ticket day is still pending
+    assert day["totals"] == {"ticketHours": 8, "noTicketHours": 0, "people": 1, "tickets": 2}
+
+    ManualDailyRecord.query.filter_by(user_id=world["users"]["coder2"].id).update({"status": "approved"})
+    db.session.commit()
+    day = manager.get(base + "&period=day")[1]["data"]
+    assert [(r["userName"], r["idleHours"], r["idleDays"]) for r in day["noTicket"]] == [
+        (f'{world["users"]["coder2"].first_name} {world["users"]["coder2"].last_name}', 8, 1)]
+    assert day["totals"]["people"] == 2 and day["pendingHours"] == 0
+
+    week = manager.get(base + "&period=week")[1]["data"]
+    assert (week["fromDate"], week["toDate"]) == (week_start.isoformat(), week_end.isoformat())
+    expected = 13 if other_day <= today else 5
+    assert [r["idleHours"] for r in week["rows"] if r["jiraKey"] == "VTEC-1101"] == [expected]
+    assert manager.get(base + "&period=month")[1]["data"]["fromDate"] == month_start.isoformat()
+
+    # Ticket filters narrow tickets and drop the No ticket lines; person filters keep them.
+    filtered = manager.get(base + f"&period=day&practiceId={world['other'].id}")[1]["data"]
+    assert [r["jiraKey"] for r in filtered["rows"]] == ["VTEC-1102"] and filtered["noTicket"] == []
+    only2 = manager.get(base + f"&period=day&userId={world['users']['coder2'].id}")[1]["data"]
+    assert only2["rows"] == [] and len(only2["noTicket"]) == 1
+    assert [r["jiraKey"] for r in manager.get(base + "&period=day&search=1102")[1]["data"]["rows"]] == ["VTEC-1102"]
+    assert coder.get(base)[0] == 403

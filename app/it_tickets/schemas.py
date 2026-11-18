@@ -30,6 +30,12 @@ class IdleTimeQuerySchema(TicketQuerySchema):
     group = fields.String(load_default="day", validate=validate.OneOf(("day", "week")))
 
 
+class IdleByCoderQuerySchema(TicketQuerySchema):
+    """Ticket filters plus a day, Monday-start week or calendar month containing `on`."""
+    period = fields.String(load_default="day", validate=validate.OneOf(("day", "week", "month")))
+    on = fields.Date(load_default=None)
+
+
 class TicketCreateSchema(Schema):
     practice_id = fields.Integer(required=True, data_key="practiceId")
     jira_key = fields.String(required=True, data_key="jiraKey", validate=validate.Length(min=1, max=32))
