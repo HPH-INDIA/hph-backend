@@ -35,4 +35,6 @@ for key, reference in references.items():
 settings["ENTRA_ENABLED"] = "false"
 os.environ.update(settings)
 os.chdir(APP_DIR)
-os.execv(str(APP_DIR / "venv/bin/python"), ["python", "-m", "flask", "--app", "run:app", "db", "upgrade"])
+# argv[0] must be the venv's own path, or Python resolves "python" on PATH and misses the venv.
+python = str(APP_DIR / "venv/bin/python")
+os.execv(python, [python, "-m", "flask", "--app", "run:app", "db", "upgrade"])
