@@ -38,6 +38,12 @@ services:
         value: redis://localhost:6379/0
       - key: CELERY_TASK_ALWAYS_EAGER
         value: "true"
+      - key: EMAIL_PROVIDER
+        value: smtp
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: SENDGRID_SANDBOX_MODE
+        value: "false"
       - key: EMAIL_HOST
         value: localhost
       - key: EMAIL_PORT

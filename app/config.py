@@ -82,6 +82,12 @@ class Config:
     # §5: Flask-Mail's own expected config keys, entirely env-driven so
     # switching from local dev (Mailpit) to a real internal SMTP relay in
     # production is a config change, not a code change to the calling sites.
+    # "smtp" (Flask-Mail, default) or "sendgrid" (SendGrid v3 Web API over
+    # HTTPS). The SendGrid key is server-only; never commit it.
+    EMAIL_PROVIDER = os.environ.get("EMAIL_PROVIDER", "smtp").strip().lower()
+    SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY") or None
+    # Validates the request with SendGrid without delivering it.
+    SENDGRID_SANDBOX_MODE = _env_bool("SENDGRID_SANDBOX_MODE")
     MAIL_SERVER = os.environ.get("EMAIL_HOST", "localhost")
     MAIL_PORT = int(os.environ.get("EMAIL_PORT", "1025"))
     MAIL_USE_TLS = _env_bool("EMAIL_USE_TLS")

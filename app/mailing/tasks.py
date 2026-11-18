@@ -1,8 +1,6 @@
-from flask import current_app
-from flask_mail import Message
-
-from app.extensions import celery, db, mail
+from app.extensions import celery, db
 from app.mailing.models import EmailLog
+from app.mailing.providers import deliver
 
 
 def _log(recipient, template_name, status, provider_message_id, error_message):
@@ -20,22 +18,15 @@ def _log(recipient, template_name, status, provider_message_id, error_message):
 
 @celery.task(bind=True, name="mailing.send_email", max_retries=3, default_retry_delay=30)
 def send_email_task(self, recipient, subject, html_body, text_body, template_name):
-    """Performs the actual SMTP send, with retry/backoff on transient
-    failures (§5) — the thing the request itself must never wait on.
+    """Performs the actual send through the configured EMAIL_PROVIDER, with
+    retry/backoff on transient failures (§5) — the thing the request itself must never wait on.
     EmailLog records the outcome either way; never the message content
     itself (e.g. a temp password), only metadata about the attempt.
     """
-    message = Message(
-        subject=subject,
-        recipients=[recipient],
-        body=text_body,
-        html=html_body,
-        sender=current_app.config["MAIL_DEFAULT_SENDER"],
-    )
     try:
-        mail.send(message)
+        message_id = deliver(recipient, subject, html_body, text_body)
     except Exception as exc:
-        _log(recipient, template_name, "failed", message.msgId, str(exc))
+        _log(recipient, template_name, "failed", None, str(exc))
         raise self.retry(exc=exc)
 
-    _log(recipient, template_name, "sent", message.msgId, None)
+    _log(recipient, template_name, "sent", message_id, None)
