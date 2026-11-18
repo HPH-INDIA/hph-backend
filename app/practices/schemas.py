@@ -24,6 +24,8 @@ class PracticeWriteSchema(Schema):
 
 class PracticeCreateSchema(PracticeWriteSchema):
     name = fields.String(required=True, validate=validate.Length(min=1, max=255))
+    # The Add practice form lets the manager pick the starting status.
+    status = fields.String(load_default="Active", validate=validate.OneOf(PRACTICE_STATUSES))
 
 
 class PracticeListQuerySchema(Schema):

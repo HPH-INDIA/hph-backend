@@ -10,7 +10,7 @@ from app.cohorts.progression import business_today
 from app.extensions import db
 from app.it_tickets.names import NameResolver, split_names
 from app.practices.models import ACCESS_STATUSES, Practice, PracticeAssignment, practice_name_key
-from app.practices.services import clean_tin, create_practice, link_kairon_records, scoped_practices
+from app.practices.services import clean_tin, create_practice, link_all_kairon_records, scoped_practices
 
 _ACCESS_BY_KEY = {status.lower(): status for status in ACCESS_STATUSES}
 
@@ -70,21 +70,31 @@ def _analyse(actor, rows, mappings):
     by_key = {}
     for practice in existing.all():
         by_key.setdefault(practice.name_key, practice)
+    seen_tin, seen_key = {}, {}  # earlier rows of this same file
     analysed, unmatched = [], []
     for index, row in enumerate(rows, start=1):
         name = _text(row.get("practice"), 255)
         tin = clean_tin(row.get("tin"))
+        key = practice_name_key(name) if name else None
         errors = [] if name else ["Practice name is missing."]
         match = by_tin.get(tin) if tin else None
-        match = match or by_key.get(practice_name_key(name)) if name else match
+        if match is None and key:
+            match = by_key.get(key)
+        duplicate_of = (seen_tin.get(tin) if tin else None) or (seen_key.get(key) if key else None)
+        if not errors:
+            if tin:
+                seen_tin.setdefault(tin, index)
+            seen_key.setdefault(key, index)
         assignments = []
         for person in _assignments_for(row):
             user = resolver.resolve(person["rawName"])
             if user is None and person["rawName"] not in unmatched:
                 unmatched.append(person["rawName"])
             assignments.append({**person, "userId": user.id if user else None})
-        analysed.append({"rowNumber": index, "action": "error" if errors else ("update" if match else "create"),
-                         "name": name, "tin": tin, "errors": errors, "assignments": assignments,
+        action = "error" if errors else ("update" if match or duplicate_of else "create")
+        analysed.append({"rowNumber": index, "action": action, "name": name, "tin": tin, "errors": errors,
+                         "assignments": assignments, "duplicateOfRow": duplicate_of,
+                         "existingPracticeId": match.id if match else None, "existingPracticeName": match.name if match else None,
                          "_match": match, "_row": row})
     return analysed, unmatched
 
@@ -108,50 +118,71 @@ def _fields(row):
     }
 
 
+def _update_practice(actor, practice, values):
+    for field, value in values.items():
+        if field == "tin":
+            tin = clean_tin(value)
+            if tin and tin != practice.tin and not Practice.query.filter(Practice.tin == tin, Practice.id != practice.id).first():
+                practice.tin = tin
+        elif value is not None:
+            setattr(practice, field, value)
+    practice.name_key = practice_name_key(practice.name)
+    practice.updated_by_id = actor.id
+
+
 def commit_practice_import(actor, rows, mappings):
+    """One transaction for the whole file. Rows naming the same practice
+    (same TIN or name) are merged into one, and a person listed twice for a
+    practice (for example in both the 1LR and QA columns, or under two
+    spellings mapped to the same user) gets a single assignment."""
     analysed, _ = _analyse(actor, rows, mappings)
     result = {"created": 0, "updated": 0, "assignmentsCreated": 0, "assignmentsUpdated": 0, "skipped": 0}
     today = business_today()
+    by_row = {}
     for item in analysed:
         if item["action"] == "error":
             result["skipped"] += 1
             continue
         values = _fields(item["_row"])
-        practice = item["_match"]
-        if practice is None:  # an earlier row of this same file may have created it
-            tin = clean_tin(values["tin"])
-            practice = (scoped_practices(actor).filter(Practice.tin == tin).first() if tin else None) or \
-                scoped_practices(actor).filter(Practice.name_key == practice_name_key(values["name"])).first()
-            if practice is not None:
-                item["_match"] = practice
+        practice = item["_match"] or by_row.get(item["duplicateOfRow"])
         if practice is None:
-            practice = create_practice(actor, values, commit=False)
+            tin = clean_tin(values["tin"])
+            if tin and Practice.query.filter(Practice.tin == tin).first() is not None:
+                values["tin"] = None  # TIN belongs to a practice outside this user's scope
+            practice = create_practice(actor, values, commit=False, link_kairon=False)
             result["created"] += 1
         else:
-            for field, value in values.items():
-                if field == "tin":
-                    tin = clean_tin(value)
-                    if tin and tin != practice.tin and not Practice.query.filter(Practice.tin == tin, Practice.id != practice.id).first():
-                        practice.tin = tin
-                elif value is not None:
-                    setattr(practice, field, value)
-            practice.name_key = practice_name_key(practice.name)
-            practice.updated_by_id = actor.id
-            link_kairon_records(practice)
-            result["updated"] += 1
+            _update_practice(actor, practice, values)
+            if item["_match"] is not None and item["duplicateOfRow"] is None:
+                result["updated"] += 1
+        by_row[item["rowNumber"]] = practice
+        item["_practice"] = practice
+
+    practice_ids = {item["_practice"].id for item in analysed if item.get("_practice") is not None}
+    existing = {(a.practice_id, a.user_id): a for a in
+                PracticeAssignment.query.filter(PracticeAssignment.practice_id.in_(practice_ids)).all()} if practice_ids else {}
+    for item in analysed:
+        practice = item.get("_practice")
+        if practice is None:
+            continue
         for person in item["assignments"]:
             if person["userId"] is None:
                 continue
-            assignment = PracticeAssignment.query.filter_by(practice_id=practice.id, user_id=person["userId"]).first()
+            key = (practice.id, person["userId"])
+            assignment = existing.get(key)
             if assignment is None:
-                db.session.add(PracticeAssignment(
+                assignment = PracticeAssignment(
                     practice_id=practice.id, user_id=person["userId"], access_status=person["accessStatus"],
-                    access_status_since=today if person["accessStatus"] else None, assigned_by_id=actor.id))
+                    access_status_since=today if person["accessStatus"] else None, assigned_by_id=actor.id)
+                db.session.add(assignment)
+                existing[key] = assignment
                 result["assignmentsCreated"] += 1
             elif person["accessStatus"] and assignment.access_status != person["accessStatus"]:
                 assignment.access_status = person["accessStatus"]
                 assignment.access_status_since = today
-                result["assignmentsUpdated"] += 1
-        db.session.flush()
+                if assignment.id is not None:
+                    result["assignmentsUpdated"] += 1
+    db.session.flush()
+    link_all_kairon_records()
     db.session.commit()
     return result

@@ -386,3 +386,40 @@ def test_kairon_records_link_to_practices_by_normalised_name(app, world):
     assert status == 201
     db.session.refresh(records[1])
     assert records[1].practice_id == body["data"]["id"]
+
+
+def test_add_practice_accepts_starting_status(app, world):
+    manager = login(app, world["users"]["manager"])
+    status, body = manager.post("/api/practices", {"name": "Form Clinic", "tin": "fdas", "worktype": "Pre-Visit Planning",
+                                                  "priorityRank": 2, "cmsCount": 2, "filter72": "fdasf", "status": "Active"})
+    assert status == 201 and body["data"]["status"] == "Active" and body["data"]["tin"] is None
+    status, body = manager.post("/api/practices", {"name": "Paused Clinic", "status": "Inactive"})
+    assert status == 201 and body["data"]["status"] == "Inactive"
+    status, _ = manager.post("/api/practices", {"name": "Bad", "status": "Closed"})
+    assert status == 422
+
+
+def test_practice_import_merges_duplicate_rows_and_people(app, world):
+    """Same person in both the 1LR and QA columns, two spellings mapped to one
+    user, and the same practice twice in the file must not fail the import."""
+    coder = world["users"]["coder"]
+    manager = login(app, world["users"]["manager"])
+    rows = [
+        {"tin": "111111111", "practice": "Paper Clinic", "coder1lr": "Paper", "qa2lr": "Paper",
+         "coder1lrAccess": "Access Live", "qa2lrAccess": "Access Live"},
+        {"tin": "222222222", "practice": "Temp Clinic", "coder1lr": "Eric Osorio | Eric Osorio temp assignment"},
+        {"tin": "111111111", "practice": "PAPER CLINIC ", "emr": "eCW", "coder1lr": "Paper"},
+        {"practice": "Temp  clinic", "notes": "same name, no TIN"},
+    ]
+    mappings = {"Paper": coder.id, "Eric Osorio": coder.id, "Eric Osorio temp assignment": coder.id}
+    status, preview = manager.post("/api/practices/imports/preview", {"rows": rows, "userMappings": mappings})
+    assert status == 200
+    assert preview["data"]["summary"] == {"create": 2, "update": 2, "error": 0}
+    assert [r["duplicateOfRow"] for r in preview["data"]["rows"]] == [None, None, 1, 2]
+    status, result = manager.post("/api/practices/imports/commit", {"rows": rows, "userMappings": mappings})
+    assert status == 200, result
+    assert result["data"]["created"] == 2 and result["data"]["assignmentsCreated"] == 2
+    paper = Practice.query.filter_by(tin="111111111").one()
+    assert paper.emr == "eCW" and [a.user_id for a in paper.assignments] == [coder.id]
+    temp = Practice.query.filter_by(tin="222222222").one()
+    assert temp.notes == "same name, no TIN" and len(temp.assignments) == 1
