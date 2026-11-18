@@ -83,7 +83,7 @@ def serialize_practice(practice, counts=None):
 # ---- queries ---------------------------------------------------------------
 
 def scoped_practices(user):
-    return practice_scope(Practice.query, Practice.project_id, user)
+    return practice_scope(Practice.query.filter(Practice.is_system.is_(False)), Practice.project_id, user)
 
 
 def get_practice(user, practice_id):

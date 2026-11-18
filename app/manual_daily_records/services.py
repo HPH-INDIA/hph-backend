@@ -473,7 +473,7 @@ def upsert_own_record(user_id, data, *, enforce_ticket_rule=False):
     db.session.flush()
 
     from app.it_tickets.services import link_record_tickets
-    link_record_tickets(record, owner, data.get("tickets"), enforce=enforce_ticket_rule)
+    link_record_tickets(record, owner, data.get("tickets"), enforce=enforce_ticket_rule, no_ticket=data.get("no_ticket_idle", False))
     db.session.flush()
     db.session.expire(record, ["ticket_links"])
 

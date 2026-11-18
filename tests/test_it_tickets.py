@@ -637,3 +637,77 @@ def test_idle_time_lost_to_tickets_by_day_and_week(app, world):
 
     assert manager.get(f"/api/it-tickets/idle-time?idleFrom={d1.isoformat()}&idleTo={d2.isoformat()}")[0] == 422
     assert coder.get(base)[0] == 403
+
+
+def _manual_no_ticket(client, day, idle="6", downtime="2", leave="0", **extra):
+    body = {"date": day.isoformat(), "pvpCount": 0, "foundationCount": 0, "techIssuesDowntimeHours": downtime,
+            "noInventoryIdleTimeHours": idle, "leaveHours": leave, "meetingEngagementHours": "0", "noTicketIdle": True, **extra}
+    return client.post("/api/manual-daily-records", body)
+
+
+def test_no_ticket_idle_day_creates_a_hidden_generic_entry(app, world):
+    from app.it_tickets.services import no_ticket_key
+
+    coder_user = world["users"]["coder"]
+    coder = login(app, coder_user)
+    day = business_today() - dt.timedelta(days=1)
+    key = no_ticket_key(coder_user, day)
+    assert key.startswith(f"NOTICKET-{day:%Y%m%d}-") and len(key) <= 32
+
+    # Only for a full idle day, and never together with real tickets.
+    assert _manual_no_ticket(coder, day, idle="2", downtime="0")[0] == 422
+    _, real = log_ticket(coder, world, key="VTEC-901")
+    status, body = _manual_no_ticket(coder, day, tickets=[{"ticketId": real["data"]["id"], "hours": "8"}])
+    assert status == 422 and "not both" in body["message"]
+
+    status, body = _manual_no_ticket(coder, day)
+    assert status == 200, body
+    assert body["data"]["tickets"] == [{"ticketId": body["data"]["tickets"][0]["ticketId"], "jiraKey": key,
+                                        "practiceName": "All practices (no ticket)", "hours": "8.00", "noTicket": True}]
+    entry = ItTicket.query.filter_by(jira_key=key).one()
+    assert entry.source == "no_ticket" and entry.status == "resolved" and entry.opened_on == day == entry.resolved_on
+    # Saving the same day again reuses the entry.
+    assert _manual_no_ticket(coder, day)[0] == 200
+    assert ItTicket.query.filter_by(source="no_ticket").count() == 1
+
+    # Not a ticket anywhere: lists, summary, detail, practices and filters.
+    mine = coder.get("/api/it-tickets?scope=mine&pageSize=100")[1]["data"]["items"]
+    assert [t["jiraKey"] for t in mine] == ["VTEC-901"]
+    manager = login(app, world["users"]["manager"])
+    assert manager.get("/api/it-tickets/summary")[1]["data"]["total"] == 1
+    assert coder.get(f"/api/it-tickets/{entry.id}")[0] == 404
+    assert all(p["name"] != "All practices (no ticket)" for p in manager.get("/api/practices?pageSize=500")[1]["data"]["items"])
+    assert all(p["name"] != "All practices (no ticket)" for p in manager.get("/api/it-tickets/filter-options")[1]["data"]["practices"])
+
+    # Switching the day to a real ticket removes the generic entry.
+    status, body = _manual(coder, day, [{"ticketId": real["data"]["id"], "hours": "8"}])
+    assert status == 200, body
+    assert ItTicket.query.filter_by(source="no_ticket").count() == 0
+
+    # Deleting a No ticket - idle record removes its entry too.
+    status, body = _manual_no_ticket(coder, day)
+    assert status == 200 and ItTicket.query.filter_by(source="no_ticket").count() == 1
+    assert coder.delete(f"/api/manual-daily-records/{body['data']['id']}")[0] == 200
+    assert ItTicket.query.filter_by(source="no_ticket").count() == 0
+
+
+def test_idle_time_shows_no_ticket_idle_hours(app, world):
+    from app.manual_daily_records.models import ManualDailyRecord
+
+    coder = login(app, world["users"]["coder"])
+    today = business_today()
+    assert _manual_no_ticket(coder, today)[0] == 200
+    manager = login(app, world["users"]["manager"])
+    url = f"/api/it-tickets/idle-time?idleFrom={today.isoformat()}&idleTo={today.isoformat()}"
+    pending = manager.get(url)[1]["data"]
+    assert pending["totals"]["noTicketHours"] == 0 and pending["pendingHours"] == 8
+
+    ManualDailyRecord.query.filter_by(user_id=world["users"]["coder"].id).update({"status": "approved"})
+    db.session.commit()
+    data = manager.get(url)[1]["data"]
+    assert data["totals"]["hours"] == 0 and data["totals"]["noTicketHours"] == 8
+    assert data["totals"]["noTicketPeople"] == 1 and data["totals"]["noTicketDays"] == 1
+    assert data["thisWeek"]["noTicketHours"] == 8 and data["pendingHours"] == 0
+    assert [(r["periodStart"], r["hours"], r["noTicketHours"]) for r in data["rows"]] == [(today.isoformat(), 0, 8)]
+    assert data["fullIdleDaysWithoutTicket"] == 0
+    assert manager.get(url + "&role=qa")[1]["data"]["totals"]["noTicketHours"] == 0

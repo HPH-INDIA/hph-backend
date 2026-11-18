@@ -69,6 +69,8 @@ class Practice(db.Model):
     onshore_coders = db.Column(db.String(500), nullable=True)
     notes = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(16), nullable=False, default="Active", server_default="Active")
+    # The hidden "All practices (no ticket)" row used by No ticket - idle days; never listed.
+    is_system = db.Column(db.Boolean, nullable=False, default=False, server_default=db.false())
     status_effective_from = db.Column(db.Date, nullable=True)
     status_reason = db.Column(db.String(500), nullable=True)
     created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
