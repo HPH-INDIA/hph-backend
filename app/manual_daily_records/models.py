@@ -68,6 +68,9 @@ class ManualDailyRecord(db.Model):
     meeting_type = db.Column(db.String(32), nullable=True)
     # Nullable for historical rows. The scalar fields remain the aggregate/legacy view.
     meetings = db.Column(db.JSON, nullable=True)
+    # Added by migration d7c8e2f1a609 (with ck_manual_daily_records_holiday_no_work);
+    # declared here so the models match the database.
+    office_holiday = db.Column(db.Boolean, nullable=False, default=False, server_default=db.false())
 
     # Snapshots calculated on submission/import or an explicit target change.
     # Reads and reviews preserve them; component rates explain mixed-day capacity.

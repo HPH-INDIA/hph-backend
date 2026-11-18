@@ -424,7 +424,7 @@ def complete_manual_import(batch_id, uploaded_by_id):
     return batch
 
 
-def upsert_own_record(user_id, data):
+def upsert_own_record(user_id, data, *, enforce_ticket_rule=False):
     """Creates today's-or-any-day's record for `user_id`, or updates it if
     one already exists for that (user, date) pair - unique per §6.1, so
     re-submitting the same day always edits in place rather than creating
@@ -471,6 +471,11 @@ def upsert_own_record(user_id, data):
     _set_submission_review(record, db.session.get(User, user_id), user_id)
 
     db.session.flush()
+
+    from app.it_tickets.services import link_record_tickets
+    link_record_tickets(record, owner, data.get("tickets"), enforce=enforce_ticket_rule)
+    db.session.flush()
+    db.session.expire(record, ["ticket_links"])
 
     # Main stages are refreshed only from completed Kairon evidence. A manual
     # submission snapshots the existing date-specific target without moving M1.

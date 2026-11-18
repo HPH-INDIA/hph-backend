@@ -197,6 +197,8 @@ def import_batch(as_of_date, rows, uploaded_by_id, source_filename=None):
     batch.completed_at = datetime.now(timezone.utc)
     from app.cohorts.stage_refresh import refresh_all_user_stages
     refresh_all_user_stages()
+    from app.practices.services import link_all_kairon_records
+    link_all_kairon_records()
     db.session.commit()
     return batch
 
@@ -426,5 +428,7 @@ def complete_cumulative_import(batch_id):
     batch.completed_at = datetime.now(timezone.utc)
     from app.cohorts.stage_refresh import refresh_all_user_stages
     refresh_all_user_stages()
+    from app.practices.services import link_all_kairon_records
+    link_all_kairon_records()
     db.session.commit()
     return batch

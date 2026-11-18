@@ -67,7 +67,9 @@ class ManualDailyRecords(MethodView):
     def post(self, data):
         # Always the caller's own record - there is no manager-entered or
         # on-behalf-of path (§4), so no user id is ever accepted here.
-        record = upsert_own_record(g.user.id, data)
+        # The API enforces the IT-ticket rule for full idle days; other callers
+        # (imports, maintenance) only link tickets when they pass them.
+        record = upsert_own_record(g.user.id, data, enforce_ticket_rule=True)
         return {"status": 200, "message": "Manual daily record saved successfully.", "data": record}
 
 

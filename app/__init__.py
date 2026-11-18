@@ -66,6 +66,8 @@ def create_app():
     from app.lead_coverage import models as lead_coverage_models  # noqa: F401
 
     from app.storage_imports import models as storage_import_models  # noqa: F401
+    from app.practices import models as practices_models  # noqa: F401
+    from app.it_tickets import models as it_tickets_models  # noqa: F401
 
     # blueprints (flask-smorest Blueprints; each declares its own url_prefix)
     from app.roles import bp as roles_bp
@@ -101,6 +103,10 @@ def create_app():
     api.register_blueprint(lead_coverage_bp)
     from app.storage_imports import bp as storage_imports_bp
     api.register_blueprint(storage_imports_bp)
+    from app.practices import bp as practices_bp
+    api.register_blueprint(practices_bp)
+    from app.it_tickets import bp as it_tickets_bp
+    api.register_blueprint(it_tickets_bp)
 
     # Hook order is load-bearing: §4b's payload-decryption hook must run
     # BEFORE load_session, so the body is already plaintext by the time

@@ -102,6 +102,9 @@ class KaironChartRecord(db.Model):
     tat_days = db.Column(db.Integer, nullable=True)
     age_days = db.Column(db.Integer, nullable=True)
     practice = db.Column(db.String(255), nullable=True)
+    # Link to the practices master list, matched on the normalised name;
+    # the free-text `practice` above stays the source value from Kairon.
+    practice_id = db.Column(db.Integer, db.ForeignKey("practices.id", ondelete="SET NULL"), nullable=True, index=True)
 
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now(), nullable=False)
     first_seen_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now(), nullable=False)

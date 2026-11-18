@@ -36,6 +36,14 @@ from app.users.models import Project, User
 # seed migrations (via migrate_upgrade() below) and are never touched by a
 # test, so they're set up once per session rather than per test.
 _COHORT_MODULE_TABLES_FK_ORDER = (
+    # IT tickets / practices: links and audit first, then tickets, then practices.
+    "manual_record_tickets",
+    "it_ticket_events",
+    "it_tickets",
+    "practice_requests",
+    "practice_status_history",
+    "practice_assignments",
+    "practices",
     "lead_coverages",
     "storage_import_slots",
     "storage_imports",
