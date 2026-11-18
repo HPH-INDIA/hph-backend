@@ -4,6 +4,7 @@ from flask_smorest import abort
 
 from app.auth import require_feature, require_role, require_role_types
 from app.extensions import db
+from app.it_tickets.services import remove_unused_no_ticket_entries
 from app.responses import MessageEnvelopeSchema
 from app.manual_daily_records import bp
 from app.manual_daily_records.models import ManualDailyRecord, ManualImportBatch
@@ -208,7 +209,10 @@ class ManualDailyRecordDelete(MethodView):
         record = scope_manual_records(ManualDailyRecord.query, g.user).filter_by(id=record_id).with_for_update().first_or_404()
         if g.user.role.role_type.code == "employee" and record.status != "pending":
             abort(409, message="Only pending records can be deleted by their coder.")
+        owner_day = (record.user_id, record.record_date)
         db.session.delete(record)
+        db.session.flush()
+        remove_unused_no_ticket_entries(*owner_day)
         db.session.commit()
         return {"status": 200, "message": "Manual record deleted.", "data": {"deleted": [record_id]}}
 
@@ -224,7 +228,11 @@ class ManualDailyRecordsBulkDelete(MethodView):
         records = scope_manual_records(ManualDailyRecord.query, g.user).filter(ManualDailyRecord.id.in_(ids)).order_by(ManualDailyRecord.id).with_for_update().all()
         if len(records) != len(ids):
             abort(404, message="One or more selected records are unavailable. Refresh before deleting.")
+        owner_days = {(record.user_id, record.record_date) for record in records}
         for record in records:
             db.session.delete(record)
+        db.session.flush()
+        for owner_day in owner_days:
+            remove_unused_no_ticket_entries(*owner_day)
         db.session.commit()
         return {"status": 200, "message": "Selected manual records deleted.", "data": {"deleted": sorted(ids)}}

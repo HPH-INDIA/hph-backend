@@ -5,7 +5,8 @@ the link between full-idle manual records and the tickets that caused them.
 from app.extensions import db
 
 TICKET_STATUSES = ("in_progress", "resolved")
-TICKET_SOURCES = ("manual", "import")
+TICKET_SOURCES = ("manual", "import", "no_ticket")
+NO_TICKET_SOURCE = "no_ticket"
 JIRA_KEY_PATTERN = r"^VTEC-[0-9]+$"
 
 
@@ -22,8 +23,9 @@ class ItTicket(db.Model):
     __tablename__ = "it_tickets"
     __table_args__ = (
         db.CheckConstraint("status IN ('in_progress', 'resolved')", name="ck_it_tickets_status"),
-        db.CheckConstraint("source IN ('manual', 'import')", name="ck_it_tickets_source"),
-        # ck_it_tickets_jira_key (jira_key ~ JIRA_KEY_PATTERN) lives in the
+        db.CheckConstraint("source IN ('manual', 'import', 'no_ticket')", name="ck_it_tickets_source"),
+        # ck_it_tickets_jira_key (jira_key ~ JIRA_KEY_PATTERN, or NOTICKET-YYYYMMDD-<id> for
+        # source 'no_ticket') lives in the
         # migration only: it is PostgreSQL syntax and models must stay portable.
         db.CheckConstraint("charts_available IS NULL OR charts_available >= 0", name="ck_it_tickets_charts"),
         db.CheckConstraint("resolved_on IS NULL OR resolved_on >= opened_on", name="ck_it_tickets_resolved_after_opened"),

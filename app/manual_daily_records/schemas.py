@@ -50,6 +50,8 @@ class ManualDailyRecordUpsertSchema(Schema):
     # IT tickets that caused the day's idle/downtime hours. Required when the
     # whole available day is idle - see services.link_record_tickets.
     tickets = fields.List(fields.Nested(ManualTicketLinkSchema), required=False, validate=validate.Length(max=20))
+    # "No ticket - idle": a full idle day with no IT ticket; send instead of tickets.
+    no_ticket_idle = fields.Boolean(load_default=False, data_key="noTicketIdle")
 
     @validates_schema
     def derive_production_count(self, data, **kwargs):
@@ -141,7 +143,8 @@ class ManualDailyRecordSchema(Schema):
 
     def get_tickets(self, record):
         return [{"ticketId": link.ticket_id, "jiraKey": link.ticket.jira_key,
-                 "practiceName": link.ticket.practice.name, "hours": str(link.hours)}
+                 "practiceName": link.ticket.practice.name, "hours": str(link.hours),
+                 "noTicket": link.ticket.source == "no_ticket"}
                 for link in getattr(record, "ticket_links", None) or []]
 
     def get_meetings(self, record):
