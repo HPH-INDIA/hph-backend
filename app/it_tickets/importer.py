@@ -5,6 +5,9 @@ each with the row's status. Rows match existing tickets on the Jira key.
 Statuses are copied as given: nothing is resolved or deleted automatically.
 """
 import difflib
+import re
+
+from flask_smorest import abort
 
 from app.cohorts.progression import business_today
 from app.extensions import db
@@ -37,12 +40,43 @@ class _Categories:
         return self.items[close[0]] if close else self.other
 
 
-def _analyse(actor, rows, mappings):
+_SUGGESTION_IGNORED = frozenset(("practice", "dr"))
+
+
+def _suggestion_key(name):
+    """Loose key without bracketed notes such as "(eCW)" or the words "practice"/"Dr", for suggestions only."""
+    key = practice_loose_key(re.sub(r"\(.*?\)", " ", name or ""))
+    return " ".join(word for word in key.split() if word not in _SUGGESTION_IGNORED)
+
+
+def _suggest(name, by_key):
+    """The one existing practice whose name is very close (typos, EMR notes); never auto-applied."""
+    key = _suggestion_key(name)
+    if not key:
+        return None
+    if key in by_key and len(by_key[key]) == 1:
+        return by_key[key][0]
+    close = difflib.get_close_matches(key, by_key.keys(), n=2, cutoff=0.85)
+    if len(close) == 1 or (len(close) == 2 and difflib.SequenceMatcher(None, key, close[0]).ratio()
+                           > difflib.SequenceMatcher(None, key, close[1]).ratio()):
+        candidates = by_key[close[0]]
+        return candidates[0] if len(candidates) == 1 else None
+    return None
+
+
+def _analyse(actor, rows, mappings, practice_mappings=None):
     resolver = NameResolver(actor, mappings)
-    practices, loose = {}, {}
+    practices, loose, by_id, suggestion_keys = {}, {}, {}, {}
     for practice in scoped_practices(actor).order_by(Practice.id.asc()).all():
         practices.setdefault(practice.name_key, practice)
         loose.setdefault(practice_loose_key(practice.name), []).append(practice)
+        suggestion_keys.setdefault(_suggestion_key(practice.name), []).append(practice)
+        by_id[practice.id] = practice
+    mapped = {}
+    for raw, practice_id in (practice_mappings or {}).items():
+        if practice_id not in by_id:
+            abort(422, message=f"Practice {practice_id} chosen for {raw!r} is not in your practices.")
+        mapped[practice_name_key(raw)] = by_id[practice_id]
     existing = {t.jira_key: t for t in ItTicket.query.filter(
         ItTicket.jira_key.in_([k for row in rows for k in split_jira_keys(row.get("ticket_id"))])).all()}
     analysed, unmatched_names, unmatched_practices, similar = [], [], [], []
@@ -51,7 +85,7 @@ def _analyse(actor, rows, mappings):
         coder = _text(row.get("coder_name"))
         practice_name = _text(row.get("practice_name"))
         user = resolver.resolve(coder) if coder else None
-        practice = practices.get(practice_name_key(practice_name)) if practice_name else None
+        practice = (mapped.get(practice_name_key(practice_name)) or practices.get(practice_name_key(practice_name))) if practice_name else None
         if practice is None and practice_name:
             # Only a single existing practice with the same loose name counts as a match.
             candidates = loose.get(practice_loose_key(practice_name), [])
@@ -82,23 +116,29 @@ def _analyse(actor, rows, mappings):
                 "practiceName": practice_name, "practiceId": practice.id if practice else None,
                 "errors": list(errors), "_row": row, "_user": user, "_practice": practice, "_opened": opened,
             })
-    return analysed, unmatched_names, unmatched_practices, similar, existing
+    suggestions = []
+    for name in unmatched_practices:
+        suggestion = _suggest(name, suggestion_keys)
+        if suggestion is not None:
+            suggestions.append({"nameInFile": name, "practiceId": suggestion.id, "practiceName": suggestion.name})
+    return analysed, unmatched_names, unmatched_practices, similar, suggestions, existing
 
 
-def preview_ticket_import(actor, rows, mappings):
-    analysed, names, practices, similar, _ = _analyse(actor, rows, mappings)
+def preview_ticket_import(actor, rows, mappings, practice_mappings=None):
+    analysed, names, practices, similar, suggestions, _ = _analyse(actor, rows, mappings, practice_mappings)
     summary = {"create": 0, "update": 0, "error": 0}
     for item in analysed:
         summary[item["action"]] += 1
     return {"rows": [{k: v for k, v in item.items() if not k.startswith("_")} for item in analysed],
-            "unmatchedNames": names, "unmatchedPractices": practices, "similarPractices": similar, "summary": summary}
+            "unmatchedNames": names, "unmatchedPractices": practices, "similarPractices": similar,
+            "practiceSuggestions": suggestions, "summary": summary}
 
 
-def commit_ticket_import(actor, rows, mappings):
+def commit_ticket_import(actor, rows, mappings, practice_mappings=None):
     """One transaction, and a fixed number of queries however long the file is:
     new practices are inserted together, then tickets, then assignments and
     history events, each in one flush."""
-    analysed, _, _, _, existing = _analyse(actor, rows, mappings)
+    analysed, _, _, _, _, existing = _analyse(actor, rows, mappings, practice_mappings)
     categories = _Categories()
     result = {"created": 0, "updated": 0, "practicesCreated": 0, "skipped": 0}
     today = business_today()

@@ -547,3 +547,41 @@ def test_ticket_import_query_count_does_not_grow_with_rows(app, world):
     assert (world["practice"].id, coder.id) in pairs and (world["practice"].id, qa.id) in pairs
     assert all((p.id, coder.id) in pairs or (p.id, qa.id) in pairs for p in tracker)
     assert ItTicket.query.filter_by(jira_key="VTEC-40000").one().status == "resolved"
+
+
+def test_ticket_import_suggests_and_applies_practice_mappings(app, world):
+    """Unmatched tracker names get a suggestion (EMR notes in brackets and
+    typos ignored) but are only mapped when the importer sends a mapping."""
+    coder = world["users"]["coder"]
+    manager = login(app, world["users"]["manager"])
+    name = f"{coder.first_name} {coder.last_name}"
+    rows = [
+        {"coderName": name, "practiceName": "Riverbend Internal Medicine (eCW)", "ticketId": "VTEC-32001",
+         "ticketOpenDate": "2026-09-01", "ticketStatus": "In Progress"},
+        {"coderName": name, "practiceName": "Lakeview Famly Medicine Practice", "ticketId": "VTEC-32002",
+         "ticketOpenDate": "2026-09-01", "ticketStatus": "In Progress"},
+        {"coderName": name, "practiceName": "Totally Different Clinic", "ticketId": "VTEC-32003",
+         "ticketOpenDate": "2026-09-01", "ticketStatus": "In Progress"},
+    ]
+    status, preview = manager.post("/api/it-tickets/imports/preview", {"rows": rows})
+    assert status == 200, preview
+    data = preview["data"]
+    assert data["unmatchedPractices"] == ["Riverbend Internal Medicine (eCW)", "Lakeview Famly Medicine Practice", "Totally Different Clinic"]
+    assert data["practiceSuggestions"] == [
+        {"nameInFile": "Riverbend Internal Medicine (eCW)", "practiceId": world["other"].id, "practiceName": "Riverbend Internal Medicine"},
+        {"nameInFile": "Lakeview Famly Medicine Practice", "practiceId": world["practice"].id, "practiceName": "Lakeview Family Medicine"},
+    ]
+
+    # Another project's practice can't be chosen.
+    status, body = manager.post("/api/it-tickets/imports/commit",
+                                {"rows": rows, "practiceMappings": {"Totally Different Clinic": world["rcm_practice"].id}})
+    assert status == 422, body
+    assert ItTicket.query.filter(ItTicket.jira_key.in_(["VTEC-32001", "VTEC-32002", "VTEC-32003"])).count() == 0
+
+    mappings = {"Riverbend Internal Medicine (eCW)": world["other"].id, "lakeview famly  medicine practice": world["practice"].id}
+    status, result = manager.post("/api/it-tickets/imports/commit", {"rows": rows, "practiceMappings": mappings})
+    assert status == 200, result
+    assert result["data"]["created"] == 3 and result["data"]["practicesCreated"] == 1
+    tickets = {t.jira_key: t.practice_id for t in ItTicket.query.filter(ItTicket.jira_key.like("VTEC-3200%")).all()}
+    assert tickets["VTEC-32001"] == world["other"].id and tickets["VTEC-32002"] == world["practice"].id
+    assert Practice.query.filter_by(name="Totally Different Clinic").count() == 1

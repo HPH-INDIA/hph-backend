@@ -84,6 +84,7 @@ class TicketImportRowSchema(Schema):
 class TicketImportSchema(Schema):
     rows = fields.List(fields.Nested(TicketImportRowSchema), required=True, validate=validate.Length(min=1, max=5000))
     user_mappings = fields.Dict(keys=fields.String(), values=fields.Integer(), load_default=dict, data_key="userMappings")
+    practice_mappings = fields.Dict(keys=fields.String(), values=fields.Integer(), load_default=dict, data_key="practiceMappings")
 
 
 DataEnvelopeSchema = envelope_schema("ItTicketsDataEnvelopeSchema", fields.Raw(allow_none=True))

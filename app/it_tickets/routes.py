@@ -132,7 +132,7 @@ class TicketImportPreview(MethodView):
     @bp.response(200, DataEnvelopeSchema)
     def post(self, data):
         from app.it_tickets.importer import preview_ticket_import
-        return ok(preview_ticket_import(g.user, data["rows"], data["user_mappings"]), "Preview ready.")
+        return ok(preview_ticket_import(g.user, data["rows"], data["user_mappings"], data["practice_mappings"]), "Preview ready.")
 
 
 @bp.route("/it-tickets/imports/commit")
@@ -143,4 +143,4 @@ class TicketImportCommit(MethodView):
     @bp.response(200, DataEnvelopeSchema)
     def post(self, data):
         from app.it_tickets.importer import commit_ticket_import
-        return ok(commit_ticket_import(g.user, data["rows"], data["user_mappings"]), "Tickets imported.")
+        return ok(commit_ticket_import(g.user, data["rows"], data["user_mappings"], data["practice_mappings"]), "Tickets imported.")
