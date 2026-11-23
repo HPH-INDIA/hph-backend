@@ -766,3 +766,29 @@ def test_idle_by_coder_lists_tickets_with_idle_hours_by_day_week_and_month(app, 
     assert only2["rows"] == [] and len(only2["noTicket"]) == 1
     assert [r["jiraKey"] for r in manager.get(base + "&period=day&search=1102")[1]["data"]["rows"]] == ["VTEC-1102"]
     assert coder.get(base)[0] == 403
+
+
+def test_idle_by_coder_shows_idle_hours_no_ticket_covers(app, world):
+    from app.manual_daily_records.models import ManualDailyRecord
+
+    today = business_today()
+    coder, coder2 = login(app, world["users"]["coder"]), login(app, world["users"]["coder2"])
+    _, ticket = log_ticket(coder, world, key="VTEC-1201")
+    # Partial idle days: coder covers 1 of 3 idle hours with a ticket; coder2 links nothing.
+    assert _manual(coder, today, [{"ticketId": ticket["data"]["id"], "hours": "1"}], idle="2", downtime="1")[0] == 200
+    assert _manual(coder2, today, idle="3", downtime="0")[0] == 200
+
+    manager = login(app, world["users"]["manager"])
+    url = f"/api/it-tickets/idle-by-coder?period=day&on={today.isoformat()}"
+    data = manager.get(url)[1]["data"]
+    assert data["noTicket"] == [] and data["pendingHours"] == 6      # all 6 idle hours await review
+    ManualDailyRecord.query.update({"status": "approved"})
+    db.session.commit()
+
+    data = manager.get(url)[1]["data"]
+    names = {u.id: f"{u.first_name} {u.last_name}" for u in (world["users"]["coder"], world["users"]["coder2"])}
+    assert [(r["userName"], r["idleHours"], r["idleDays"]) for r in data["noTicket"]] == sorted(
+        [(names[world["users"]["coder"].id], 2, 1), (names[world["users"]["coder2"].id], 3, 1)], key=lambda r: r[0].lower())
+    assert [(r["jiraKey"], r["idleHours"]) for r in data["rows"]] == [("VTEC-1201", 1)]
+    assert data["totals"] == {"ticketHours": 1, "noTicketHours": 5, "people": 2, "tickets": 1}
+    assert data["pendingHours"] == 0
