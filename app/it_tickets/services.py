@@ -341,11 +341,49 @@ def idle_period(period, day):
     return day, day
 
 
+def _idle_without_ticket(user, args, window):
+    """Per coder: idle hours (tech downtime + no-inventory idle) in daily records
+    that no real ticket covers - days with no ticket linked, the uncovered part of
+    a day, and days marked No ticket - idle. Returns (approved lines, pending hours)."""
+    people = apply_user_scope(db.select(ManualDailyRecord.id), ManualDailyRecord.user_id, user)
+    people = role_filter(people, ManualDailyRecord.user_id, args.get("role"))
+    if args.get("user_id"):
+        people = people.where(ManualDailyRecord.user_id.in_(args["user_id"]))
+    covered = (db.select(ManualRecordTicket.manual_record_id.label("record_id"),
+                         db.func.sum(ManualRecordTicket.hours).label("hours"))
+               .join(ItTicket, ItTicket.id == ManualRecordTicket.ticket_id)
+               .where(ItTicket.source != NO_TICKET_SOURCE)
+               .group_by(ManualRecordTicket.manual_record_id).subquery())
+    idle = (db.func.coalesce(ManualDailyRecord.tech_issues_downtime_hours, 0)
+            + db.func.coalesce(ManualDailyRecord.no_inventory_idle_time_hours, 0))
+    records = db.session.execute(
+        db.select(ManualDailyRecord.user_id, ManualDailyRecord.status, idle, db.func.coalesce(covered.c.hours, 0))
+        .outerjoin(covered, covered.c.record_id == ManualDailyRecord.id)
+        .where(ManualDailyRecord.id.in_(people), *window,
+               ManualDailyRecord.status.in_(("approved", "pending")), idle > 0)).all()
+    hours, days, pending = defaultdict(Decimal), Counter(), Decimal(0)
+    for user_id, status, idle_hours, linked in records:
+        left = Decimal(idle_hours) - Decimal(linked)
+        if left <= 0:
+            continue
+        if status == "pending":
+            pending += left
+        else:
+            hours[user_id] += left
+            days[user_id] += 1
+    owners = {u.id: u for u in User.query.options(db.selectinload(User.role).selectinload(Role.role_type))
+              .filter(User.id.in_(hours)).all()} if hours else {}
+    lines = sorted(({"userId": uid, "userName": full_name(owners[uid]), "role": ticket_role(owners[uid]),
+                     "idleHours": _hours(total), "idleDays": days[uid]} for uid, total in hours.items()),
+                   key=lambda r: r["userName"].lower())
+    return lines, pending
+
+
 def idle_by_coder(user, args):
     """Tickets coders linked idle hours to in lead-approved daily records for a
     day / week / month - one row per ticket with its hours - plus each coder's
-    No ticket - idle hours. Ticket filters narrow the tickets; when any is set,
-    No ticket - idle lines are left out (they have no practice, status or category)."""
+    idle hours no ticket covers. Ticket filters narrow the tickets; when any is set,
+    the no-ticket lines are left out (they have no practice, status or category)."""
     period = args.get("period") or "day"
     start, end = idle_period(period, args.get("on") or business_today())
     ticket_ids = filtered_query(user, args).with_entities(ItTicket.id)
@@ -370,24 +408,8 @@ def idle_by_coder(user, args):
 
     no_ticket = []
     if not any(args.get(key) for key in TICKET_ONLY_FILTERS):
-        people = apply_user_scope(db.select(ManualDailyRecord.id), ManualDailyRecord.user_id, user)
-        people = role_filter(people, ManualDailyRecord.user_id, args.get("role"))
-        if args.get("user_id"):
-            people = people.where(ManualDailyRecord.user_id.in_(args["user_id"]))
-        found = db.session.execute(
-            db.select(ManualDailyRecord.user_id, ManualDailyRecord.status,
-                      db.func.sum(ManualRecordTicket.hours), db.func.count(ManualDailyRecord.id))
-            .join(ManualDailyRecord, ManualDailyRecord.id == ManualRecordTicket.manual_record_id)
-            .join(ItTicket, ItTicket.id == ManualRecordTicket.ticket_id)
-            .where(ItTicket.source == NO_TICKET_SOURCE, ManualDailyRecord.id.in_(people), *window,
-                   ManualDailyRecord.status.in_(("approved", "pending")))
-            .group_by(ManualDailyRecord.user_id, ManualDailyRecord.status)).all()
-        pending += sum((r[2] for r in found if r[1] == "pending"), Decimal(0))
-        owners = {u.id: u for u in User.query.options(db.selectinload(User.role).selectinload(Role.role_type))
-                  .filter(User.id.in_({r[0] for r in found if r[1] == "approved"})).all()}
-        no_ticket = sorted(({"userId": r[0], "userName": full_name(owners[r[0]]), "role": ticket_role(owners[r[0]]),
-                             "idleHours": _hours(r[2]), "idleDays": r[3]} for r in found if r[1] == "approved"),
-                           key=lambda r: r["userName"].lower())
+        no_ticket, unlinked_pending = _idle_without_ticket(user, args, window)
+        pending += unlinked_pending
 
     people_count = len({r["userId"] for r in rows} | {r["userId"] for r in no_ticket})
     return {
