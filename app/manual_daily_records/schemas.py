@@ -17,7 +17,9 @@ class ManualMeetingSchema(Schema):
 
 class ManualTicketLinkSchema(Schema):
     ticket_id = fields.Integer(required=True, data_key="ticketId")
-    hours = fields.Decimal(required=True, places=2, validate=validate.Range(min=Decimal("0.01"), max=MAX_HOURS_PER_FIELD))
+    # Ignored: older clients still send a per-ticket split. The day's idle hours
+    # live only on the daily record; tickets are just the reasons.
+    hours = fields.Raw(load_default=None, allow_none=True, load_only=True)
 
 
 class ManualDailyRecordUpsertSchema(Schema):
@@ -143,7 +145,7 @@ class ManualDailyRecordSchema(Schema):
 
     def get_tickets(self, record):
         return [{"ticketId": link.ticket_id, "jiraKey": link.ticket.jira_key,
-                 "practiceName": link.ticket.practice.name, "hours": str(link.hours),
+                 "practiceName": link.ticket.practice.name,
                  "noTicket": link.ticket.source == "no_ticket"}
                 for link in getattr(record, "ticket_links", None) or []]
 

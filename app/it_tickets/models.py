@@ -78,7 +78,11 @@ class ItTicketEvent(db.Model):
 
 
 class ManualRecordTicket(db.Model):
-    """Idle hours of one manual daily record attributed to one ticket."""
+    """An IT ticket ticked as a reason for one manual daily record's idle time.
+
+    The day's idle hours live only on the daily record (one per person per
+    day). `hours` is legacy: it held a per-ticket split of those hours, was
+    cleared by migration b4e7c2a91d05 and is no longer written or read."""
 
     __tablename__ = "manual_record_tickets"
     __table_args__ = (db.CheckConstraint("hours >= 0 AND hours <= 10", name="ck_manual_record_tickets_hours"),)
@@ -86,7 +90,7 @@ class ManualRecordTicket(db.Model):
     manual_record_id = db.Column(
         db.Integer, db.ForeignKey("manual_daily_records.id", ondelete="CASCADE"), primary_key=True)
     ticket_id = db.Column(db.Integer, db.ForeignKey("it_tickets.id", ondelete="CASCADE"), primary_key=True, index=True)
-    hours = db.Column(db.Numeric(4, 2), nullable=False)
+    hours = db.Column(db.Numeric(4, 2), nullable=True)
 
     ticket = db.relationship("ItTicket", lazy="joined")
     manual_record = db.relationship(

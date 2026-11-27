@@ -74,20 +74,21 @@ def aging_days(ticket, today=None):
 def _context(tickets):
     ids = [t.id for t in tickets]
     pairs = {(t.practice_id, t.user_id) for t in tickets}
-    hours = dict(db.session.execute(
-        db.select(ManualRecordTicket.ticket_id, db.func.sum(ManualRecordTicket.hours))
+    # Days (daily records) each ticket was ticked as a reason for idle time.
+    days = dict(db.session.execute(
+        db.select(ManualRecordTicket.ticket_id, db.func.count(ManualRecordTicket.manual_record_id))
         .where(ManualRecordTicket.ticket_id.in_(ids)).group_by(ManualRecordTicket.ticket_id)).all()) if ids else {}
     access = {}
     if pairs:
         practice_ids = {p for p, _ in pairs}
         for assignment in PracticeAssignment.query.filter(PracticeAssignment.practice_id.in_(practice_ids)).all():
             access[(assignment.practice_id, assignment.user_id)] = assignment.access_status
-    return hours, access
+    return days, access
 
 
-def serialize_ticket(ticket, viewer, hours=None, access=None, today=None):
-    if hours is None or access is None:
-        hours, access = _context([ticket])
+def serialize_ticket(ticket, viewer, days=None, access=None, today=None):
+    if days is None or access is None:
+        days, access = _context([ticket])
     owner = ticket.user_id == viewer.id
     moderator = can_moderate_tickets(viewer)
     return {
@@ -102,16 +103,16 @@ def serialize_ticket(ticket, viewer, hours=None, access=None, today=None):
         "resolutionNote": ticket.resolution_note, "chartsAvailable": ticket.charts_available,
         "notInKairon": ticket.not_in_kairon, "followUpIssue": ticket.follow_up_issue,
         "accessStatus": access.get((ticket.practice_id, ticket.user_id)),
-        "linkedIdleHours": float(hours.get(ticket.id) or 0), "source": ticket.source,
+        "linkedIdleDays": int(days.get(ticket.id) or 0), "source": ticket.source,
         "updatedAt": ticket.updated_at.isoformat() if ticket.updated_at else None,
         "canEdit": owner, "canChangeStatus": owner or moderator, "canDelete": moderator,
     }
 
 
 def serialize_many(tickets, viewer):
-    hours, access = _context(tickets)
+    days, access = _context(tickets)
     today = business_today()
-    return [serialize_ticket(t, viewer, hours, access, today) for t in tickets]
+    return [serialize_ticket(t, viewer, days, access, today) for t in tickets]
 
 
 def serialize_event(event):
@@ -147,16 +148,29 @@ def _month_start(today):
     return today.replace(day=1)
 
 
+def record_idle_hours():
+    """SQL expression: a daily record's idle hours (tech downtime + no-inventory idle)."""
+    return (db.func.coalesce(ManualDailyRecord.tech_issues_downtime_hours, 0)
+            + db.func.coalesce(ManualDailyRecord.no_inventory_idle_time_hours, 0))
+
+
+def _records_with_real_ticket():
+    """Ids of daily records that have at least one real IT ticket ticked."""
+    return (db.select(ManualRecordTicket.manual_record_id)
+            .join(ItTicket, ItTicket.id == ManualRecordTicket.ticket_id)
+            .where(ItTicket.source != NO_TICKET_SOURCE))
+
+
 def idle_hours_this_month(user_ids):
+    """Per person: this month's idle hours on days they ticked at least one IT
+    ticket. Each day counts once, from the daily record - never split by ticket."""
     if not user_ids:
         return {}
     today = business_today()
     rows = db.session.execute(
-        db.select(ManualDailyRecord.user_id, db.func.sum(ManualRecordTicket.hours))
-        .join(ManualDailyRecord, ManualDailyRecord.id == ManualRecordTicket.manual_record_id)
-        .join(ItTicket, ItTicket.id == ManualRecordTicket.ticket_id)
+        db.select(ManualDailyRecord.user_id, db.func.sum(record_idle_hours()))
         .where(ManualDailyRecord.user_id.in_(user_ids), ManualDailyRecord.record_date >= _month_start(today),
-               ItTicket.source != NO_TICKET_SOURCE)
+               ManualDailyRecord.id.in_(_records_with_real_ticket()))
         .group_by(ManualDailyRecord.user_id)).all()
     return {user_id: float(total or 0) for user_id, total in rows}
 
@@ -196,13 +210,55 @@ def _hours(value):
     return round(float(value), 2)
 
 
-def idle_time(user, args):
-    """Idle hours coders linked to IT tickets in their daily records - the
-    productivity lost to tickets - by day or week (weeks start on Monday).
+TICKET_ONLY_FILTERS = ("status", "access_status", "practice_id", "category_id", "opened_from", "opened_to", "search")
 
-    Only lead-approved records count; hours on records still awaiting review
-    are returned separately. Ticket filters (role, person, practice, category,
-    status, opened dates, search) narrow which tickets' hours are included.
+
+def _idle_days(user, args, start, end):
+    """Every daily record with idle hours in [start, end] for the people the
+    viewer may see (role / person filters applied): one entry per person per
+    day, approved or pending. Idle hours always come from the record itself -
+    the IT tickets ticked on it are reasons, never a split of the hours."""
+    people = apply_user_scope(db.select(ManualDailyRecord.id), ManualDailyRecord.user_id, user)
+    people = role_filter(people, ManualDailyRecord.user_id, args.get("role"))
+    if args.get("user_id"):
+        people = people.where(ManualDailyRecord.user_id.in_(args["user_id"]))
+    idle = record_idle_hours()
+    records = db.session.execute(
+        db.select(ManualDailyRecord.id, ManualDailyRecord.user_id, ManualDailyRecord.record_date,
+                  ManualDailyRecord.status, ManualDailyRecord.leave_hours, idle.label("idle"))
+        .where(ManualDailyRecord.id.in_(people), ManualDailyRecord.record_date >= start,
+               ManualDailyRecord.record_date <= end, ManualDailyRecord.status.in_(("approved", "pending")),
+               idle > 0)
+        .order_by(ManualDailyRecord.record_date.desc(), ManualDailyRecord.user_id.asc())).all()
+    links = defaultdict(list)
+    ids = [r.id for r in records]
+    if ids:
+        for link in (ManualRecordTicket.query
+                     .options(db.joinedload(ManualRecordTicket.ticket).joinedload(ItTicket.practice))
+                     .filter(ManualRecordTicket.manual_record_id.in_(ids)).all()):
+            links[link.manual_record_id].append(link.ticket)
+    return [{"id": r.id, "user_id": r.user_id, "date": r.record_date, "status": r.status,
+             "leave": Decimal(r.leave_hours or 0), "idle": Decimal(r.idle),
+             "tickets": sorted(links[r.id], key=lambda t: t.jira_key)} for r in records]
+
+
+def _is_full_idle_day(day):
+    available = STANDARD_DAY_HOURS - day["leave"]
+    return available > 0 and day["idle"] >= available
+
+
+def _ticket_ids(user, args):
+    return {row[0] for row in filtered_query(user, args).with_entities(ItTicket.id).all()}
+
+
+def idle_time(user, args):
+    """Idle hours lost to IT tickets, by day or week (weeks start on Monday).
+
+    Each person's day counts once with the idle hours on their daily record
+    (tech downtime + no-inventory idle), however many tickets they ticked.
+    A day counts as ticket idle when it has at least one ticket matching the
+    filters, and as No ticket - idle when it is marked that way. Only
+    lead-approved records count; hours awaiting review come back as pendingHours.
     """
     today = business_today()
     start = args.get("idle_from") or _month_start(today)
@@ -214,48 +270,32 @@ def idle_time(user, args):
     window_start = min(start, _month_start(today), _week_start(today))
     window_end = max(end, today)
 
-    ticket_ids = filtered_query(user, args).with_entities(ItTicket.id)
-    rows = db.session.execute(
-        db.select(ManualDailyRecord.record_date, ManualDailyRecord.status, ManualDailyRecord.user_id,
-                  ManualRecordTicket.ticket_id, ManualRecordTicket.hours, ItTicket.practice_id)
-        .join(ManualDailyRecord, ManualDailyRecord.id == ManualRecordTicket.manual_record_id)
-        .join(ItTicket, ItTicket.id == ManualRecordTicket.ticket_id)
-        .where(ManualRecordTicket.ticket_id.in_(ticket_ids),
-               ManualDailyRecord.record_date >= window_start, ManualDailyRecord.record_date <= window_end,
-               ManualDailyRecord.status.in_(("approved", "pending")))).all()
-
+    wanted = _ticket_ids(user, args)
+    days = _idle_days(user, args, window_start, window_end)
     roles = {u.id: ticket_role(u) for u in User.query.options(db.selectinload(User.role).selectinload(Role.role_type))
-             .filter(User.id.in_({r.user_id for r in rows})).all()} if rows else {}
-    practice_names = dict(db.session.execute(
-        db.select(Practice.id, Practice.name).where(Practice.id.in_({r.practice_id for r in rows}))).all()) if rows else {}
-
-    # No ticket - idle days: same people filters; ticket filters (practice, category...) don't apply.
-    people_scope = apply_user_scope(db.select(ManualDailyRecord.id), ManualDailyRecord.user_id, user)
-    people_scope = role_filter(people_scope, ManualDailyRecord.user_id, args.get("role"))
-    if args.get("user_id"):
-        people_scope = people_scope.where(ManualDailyRecord.user_id.in_(args["user_id"]))
-    no_ticket_rows = db.session.execute(
-        db.select(ManualDailyRecord.record_date, ManualDailyRecord.status, ManualDailyRecord.user_id, ManualRecordTicket.hours)
-        .join(ManualDailyRecord, ManualDailyRecord.id == ManualRecordTicket.manual_record_id)
-        .join(ItTicket, ItTicket.id == ManualRecordTicket.ticket_id)
-        .where(ItTicket.source == NO_TICKET_SOURCE, ManualDailyRecord.id.in_(people_scope),
-               ManualDailyRecord.record_date >= window_start, ManualDailyRecord.record_date <= window_end,
-               ManualDailyRecord.status.in_(("approved", "pending")))).all()
+             .filter(User.id.in_({d["user_id"] for d in days})).all()} if days else {}
+    practice_names = {}
 
     def bucket():
         return {"hours": Decimal(0), "people": set(), "tickets": set(), "days": set(),
                 "byRole": {"coder": Decimal(0), "qa": Decimal(0)}, "practices": Counter(),
                 "noTicketHours": Decimal(0), "noTicketPeople": set(), "noTicketDays": 0}
 
-    def add(target, row):
-        target["hours"] += row.hours
-        target["people"].add(row.user_id)
-        target["tickets"].add(row.ticket_id)
-        target["days"].add(row.record_date)
-        role = roles.get(row.user_id)
+    def add(target, day, tickets):
+        target["hours"] += day["idle"]
+        target["people"].add(day["user_id"])
+        target["tickets"].update(t.id for t in tickets)
+        target["days"].add(day["date"])
+        role = roles.get(day["user_id"])
         if role in target["byRole"]:
-            target["byRole"][role] += row.hours
-        target["practices"][row.practice_id] += row.hours
+            target["byRole"][role] += day["idle"]
+        for practice_id in dict.fromkeys(t.practice_id for t in tickets):  # ordered, each practice once
+            target["practices"][practice_id] += 1
+
+    def add_no_ticket(target, day, _tickets):
+        target["noTicketHours"] += day["idle"]
+        target["noTicketPeople"].add(day["user_id"])
+        target["noTicketDays"] += 1
 
     def out(target):
         top = target["practices"].most_common(1)
@@ -263,57 +303,36 @@ def idle_time(user, args):
                 "days": len(target["days"]), "byRole": {k: _hours(v) for k, v in target["byRole"].items()},
                 "noTicketHours": _hours(target["noTicketHours"]), "noTicketPeople": len(target["noTicketPeople"]),
                 "noTicketDays": target["noTicketDays"],
-                "topPractice": {"id": top[0][0], "name": practice_names.get(top[0][0]), "hours": _hours(top[0][1])} if top else None}
+                "topPractice": {"id": top[0][0], "name": practice_names.get(top[0][0]), "days": top[0][1]} if top else None}
 
     totals, this_week, this_month, periods = bucket(), bucket(), bucket(), defaultdict(bucket)
     pending = Decimal(0)
+    without_ticket = 0
     week_start, month_start = _week_start(today), _month_start(today)
-    for row in rows:
-        if row.status != "approved":
-            if start <= row.record_date <= end:
-                pending += row.hours
+    for day in days:
+        tickets = [t for t in day["tickets"] if t.id in wanted]
+        if tickets:
+            adder = add
+            practice_names.update({t.practice_id: t.practice.name for t in tickets})
+        elif any(t.source == NO_TICKET_SOURCE for t in day["tickets"]):
+            adder = add_no_ticket
+        else:
+            if (not day["tickets"] and day["status"] == "approved" and start <= day["date"] <= end
+                    and _is_full_idle_day(day)):
+                without_ticket += 1
             continue
-        if week_start <= row.record_date <= today:
-            add(this_week, row)
-        if month_start <= row.record_date <= today:
-            add(this_month, row)
-        if start <= row.record_date <= end:
-            add(totals, row)
-            key = row.record_date if args.get("group") != "week" else _week_start(row.record_date)
-            add(periods[key], row)
-
-    def add_no_ticket(target, row):
-        target["noTicketHours"] += row.hours
-        target["noTicketPeople"].add(row.user_id)
-        target["noTicketDays"] += 1
-
-    for row in no_ticket_rows:
-        if row.status != "approved":
-            if start <= row.record_date <= end:
-                pending += row.hours
+        if day["status"] != "approved":
+            if start <= day["date"] <= end:
+                pending += day["idle"]
             continue
-        if week_start <= row.record_date <= today:
-            add_no_ticket(this_week, row)
-        if month_start <= row.record_date <= today:
-            add_no_ticket(this_month, row)
-        if start <= row.record_date <= end:
-            add_no_ticket(totals, row)
-            key = row.record_date if args.get("group") != "week" else _week_start(row.record_date)
-            add_no_ticket(periods[key], row)
-
-    # Full idle days (approved) with no ticket linked, for the same people.
-    people = apply_user_scope(ManualDailyRecord.query, ManualDailyRecord.user_id, user)
-    people = role_filter(people, ManualDailyRecord.user_id, args.get("role"))
-    if args.get("user_id"):
-        people = people.filter(ManualDailyRecord.user_id.in_(args["user_id"]))
-    unlinked = people.filter(
-        ManualDailyRecord.status == "approved",
-        ManualDailyRecord.record_date >= start, ManualDailyRecord.record_date <= end,
-        ManualDailyRecord.id.notin_(db.select(ManualRecordTicket.manual_record_id))).all()
-    without_ticket = sum(1 for record in unlinked if is_full_idle({
-        "tech_issues_downtime_hours": record.tech_issues_downtime_hours,
-        "no_inventory_idle_time_hours": record.no_inventory_idle_time_hours,
-        "leave_hours": record.leave_hours})[0])
+        if week_start <= day["date"] <= today:
+            adder(this_week, day, tickets)
+        if month_start <= day["date"] <= today:
+            adder(this_month, day, tickets)
+        if start <= day["date"] <= end:
+            adder(totals, day, tickets)
+            key = day["date"] if args.get("group") != "week" else _week_start(day["date"])
+            adder(periods[key], day, tickets)
 
     week = args.get("group") == "week"
     return {
@@ -324,9 +343,6 @@ def idle_time(user, args):
                   "periodEnd": (min(key + timedelta(days=6), end) if week else key).isoformat(),
                   **out(value)} for key, value in sorted(periods.items(), reverse=True)],
     }
-
-
-TICKET_ONLY_FILTERS = ("status", "access_status", "practice_id", "category_id", "opened_from", "opened_to", "search")
 
 
 def idle_period(period, day):
@@ -341,83 +357,54 @@ def idle_period(period, day):
     return day, day
 
 
-def _idle_without_ticket(user, args, window):
-    """Per coder: idle hours (tech downtime + no-inventory idle) in daily records
-    that no real ticket covers - days with no ticket linked, the uncovered part of
-    a day, and days marked No ticket - idle. Returns (approved lines, pending hours)."""
-    people = apply_user_scope(db.select(ManualDailyRecord.id), ManualDailyRecord.user_id, user)
-    people = role_filter(people, ManualDailyRecord.user_id, args.get("role"))
-    if args.get("user_id"):
-        people = people.where(ManualDailyRecord.user_id.in_(args["user_id"]))
-    covered = (db.select(ManualRecordTicket.manual_record_id.label("record_id"),
-                         db.func.sum(ManualRecordTicket.hours).label("hours"))
-               .join(ItTicket, ItTicket.id == ManualRecordTicket.ticket_id)
-               .where(ItTicket.source != NO_TICKET_SOURCE)
-               .group_by(ManualRecordTicket.manual_record_id).subquery())
-    idle = (db.func.coalesce(ManualDailyRecord.tech_issues_downtime_hours, 0)
-            + db.func.coalesce(ManualDailyRecord.no_inventory_idle_time_hours, 0))
-    records = db.session.execute(
-        db.select(ManualDailyRecord.user_id, ManualDailyRecord.status, idle, db.func.coalesce(covered.c.hours, 0))
-        .outerjoin(covered, covered.c.record_id == ManualDailyRecord.id)
-        .where(ManualDailyRecord.id.in_(people), *window,
-               ManualDailyRecord.status.in_(("approved", "pending")), idle > 0)).all()
-    hours, days, pending = defaultdict(Decimal), Counter(), Decimal(0)
-    for user_id, status, idle_hours, linked in records:
-        left = Decimal(idle_hours) - Decimal(linked)
-        if left <= 0:
-            continue
-        if status == "pending":
-            pending += left
-        else:
-            hours[user_id] += left
-            days[user_id] += 1
-    owners = {u.id: u for u in User.query.options(db.selectinload(User.role).selectinload(Role.role_type))
-              .filter(User.id.in_(hours)).all()} if hours else {}
-    lines = sorted(({"userId": uid, "userName": full_name(owners[uid]), "role": ticket_role(owners[uid]),
-                     "idleHours": _hours(total), "idleDays": days[uid]} for uid, total in hours.items()),
-                   key=lambda r: r["userName"].lower())
-    return lines, pending
+def _ticket_tag(ticket):
+    return {"id": ticket.id, "jiraKey": ticket.jira_key, "practiceId": ticket.practice_id,
+            "practiceName": ticket.practice.name, "status": ticket.status}
 
 
 def idle_by_coder(user, args):
-    """Tickets coders linked idle hours to in lead-approved daily records for a
-    day / week / month - one row per ticket with its hours - plus each coder's
-    idle hours no ticket covers. Ticket filters narrow the tickets; when any is set,
-    the no-ticket lines are left out (they have no practice, status or category)."""
+    """Idle time for a day / week / month as ONE row per person per day: the idle
+    hours on that day's lead-approved daily record, with the IT tickets they
+    ticked listed as reasons (no per-ticket hours). Ticket filters keep only
+    days with a matching ticket; without them, days with no ticket (or marked
+    No ticket - idle) are included too."""
     period = args.get("period") or "day"
     start, end = idle_period(period, args.get("on") or business_today())
-    ticket_ids = filtered_query(user, args).with_entities(ItTicket.id)
-    window = (ManualDailyRecord.record_date >= start, ManualDailyRecord.record_date <= end)
-    linked = db.session.execute(
-        db.select(ManualRecordTicket.ticket_id, ManualDailyRecord.status,
-                  db.func.sum(ManualRecordTicket.hours), db.func.count(ManualDailyRecord.id))
-        .join(ManualDailyRecord, ManualDailyRecord.id == ManualRecordTicket.manual_record_id)
-        .where(ManualRecordTicket.ticket_id.in_(ticket_ids), *window, ManualDailyRecord.status.in_(("approved", "pending")))
-        .group_by(ManualRecordTicket.ticket_id, ManualDailyRecord.status)).all()
-    approved = {r[0]: (r[2], r[3]) for r in linked if r[1] == "approved"}
-    pending = sum((r[2] for r in linked if r[1] == "pending"), Decimal(0))
+    ticket_filtered = any(args.get(key) for key in TICKET_ONLY_FILTERS)
+    wanted = _ticket_ids(user, args)
+    days = _idle_days(user, args, start, end)
 
-    tickets = (ItTicket.query.options(db.joinedload(ItTicket.user).selectinload(User.role).selectinload(Role.role_type),
-                                      db.joinedload(ItTicket.practice), db.joinedload(ItTicket.issue_category))
-               .filter(ItTicket.id.in_(approved)).all()) if approved else []
-    rows = []
-    for item in serialize_many(tickets, user):
-        hours, days = approved[item["id"]]
-        rows.append({**item, "idleHours": _hours(hours), "idleDays": days})
-    rows.sort(key=lambda r: (r["userName"].lower(), -r["idleHours"], r["jiraKey"]))
-
-    no_ticket = []
-    if not any(args.get(key) for key in TICKET_ONLY_FILTERS):
-        no_ticket, unlinked_pending = _idle_without_ticket(user, args, window)
-        pending += unlinked_pending
-
-    people_count = len({r["userId"] for r in rows} | {r["userId"] for r in no_ticket})
+    owners = {u.id: u for u in User.query.options(db.selectinload(User.role).selectinload(Role.role_type))
+              .filter(User.id.in_({d["user_id"] for d in days})).all()} if days else {}
+    rows, pending = [], Decimal(0)
+    ticket_hours, no_ticket_hours, ticket_ids = Decimal(0), Decimal(0), set()
+    for day in days:
+        real = [t for t in day["tickets"] if t.source != NO_TICKET_SOURCE]
+        matching = [t for t in real if t.id in wanted]
+        if ticket_filtered and not matching:
+            continue
+        if day["status"] != "approved":
+            pending += day["idle"]
+            continue
+        owner = owners[day["user_id"]]
+        if real:
+            ticket_hours += day["idle"]
+            ticket_ids.update(t.id for t in real)
+        else:
+            no_ticket_hours += day["idle"]
+        rows.append({
+            "recordId": day["id"], "userId": owner.id, "userName": full_name(owner), "empId": owner.emp_id,
+            "role": ticket_role(owner), "date": day["date"].isoformat(), "idleHours": _hours(day["idle"]),
+            "fullDay": _is_full_idle_day(day), "tickets": [_ticket_tag(t) for t in real],
+            "noTicket": not real and any(t.source == NO_TICKET_SOURCE for t in day["tickets"]),
+        })
+    rows.sort(key=lambda r: (r["userName"].lower(), r["date"]))
     return {
         "period": period, "fromDate": start.isoformat(), "toDate": end.isoformat(),
-        "rows": rows, "noTicket": no_ticket, "pendingHours": _hours(pending),
-        "totals": {"ticketHours": _hours(sum((r[0] for r in approved.values()), Decimal(0))),
-                   "noTicketHours": round(sum(r["idleHours"] for r in no_ticket), 2),
-                   "people": people_count, "tickets": len(rows)},
+        "rows": rows, "pendingHours": _hours(pending),
+        "totals": {"idleHours": _hours(ticket_hours + no_ticket_hours), "ticketHours": _hours(ticket_hours),
+                   "noTicketHours": _hours(no_ticket_hours), "people": len({r["userId"] for r in rows}),
+                   "days": len(rows), "tickets": len(ticket_ids)},
     }
 
 
@@ -746,15 +733,16 @@ def remove_unused_no_ticket_entries(user_id, day):
 
 
 def link_record_tickets(record, owner, tickets, *, enforce=True, no_ticket=False):
-    """Attach the IT tickets behind a manual record's idle hours.
+    """Tick the IT tickets behind a manual record's idle hours.
 
+    One daily record holds the day's idle hours (tech downtime + no-inventory
+    idle); tickets are only the reasons - their hours are never split.
     Rule (Coder (1LR) / QA (2LR) with the it_tickets feature): when idle +
     downtime >= 8 - leave (and that is > 0) at least one of the owner's open
-    tickets must be linked and the linked hours must equal the idle hours.
-    Partial idle days may link tickets; their hours must not exceed idle.
+    tickets must be ticked, or No ticket - idle. Partial idle days may tick
+    tickets. A day with no idle hours keeps no tickets.
     `tickets` None means "not sent" - existing links are kept and re-checked.
-    `no_ticket` ("No ticket - idle"): a full idle day with no IT ticket; all the
-    idle hours go to that day's generic NOTICKET entry instead of tickets.
+    Each item is {"ticket_id": int}; an "hours" key from older clients is ignored.
     """
     from app.auth import has_feature
 
@@ -768,22 +756,26 @@ def link_record_tickets(record, owner, tickets, *, enforce=True, no_ticket=False
     existing = {link.ticket_id: link for link in (getattr(record, "ticket_links", None) or [])}
     if no_ticket:
         if not full:
-            abort(422, message="No ticket - idle is only for a full idle day; link tickets or leave them out on a partial idle day.")
+            abort(422, message="No ticket - idle is only for a full idle day; tick tickets or leave them out on a partial idle day.")
         if tickets:
             abort(422, message="Choose either IT tickets or No ticket - idle, not both.")
-        tickets = [{"ticket_id": _no_ticket_entry(owner, record.record_date).id, "hours": idle}]
+        tickets = [{"ticket_id": _no_ticket_entry(owner, record.record_date).id}]
+    if idle <= 0:
+        if tickets:
+            abort(422, message="Tick IT tickets only on a day with idle or downtime hours.")
+        tickets = []
     if tickets is None:
-        tickets = [{"ticket_id": tid, "hours": link.hours} for tid, link in existing.items()]
+        tickets = [{"ticket_id": tid} for tid in existing]
     if full and not tickets and enforce:
-        abort(422, message=f"Full idle day ({idle} h): link at least one IT ticket that blocked you and split the hours.")
+        abort(422, message=f"Full idle day ({idle} h): tick at least one IT ticket that blocked you, or No ticket - idle.")
     if not tickets and not existing:
         return
-    seen, total = set(), Decimal("0")
+    wanted = []
     for item in tickets:
-        ticket_id, hours = item["ticket_id"], Decimal(str(item["hours"]))
-        if ticket_id in seen:
-            abort(422, message="Each ticket can be linked only once per day.")
-        seen.add(ticket_id)
+        ticket_id = item["ticket_id"]
+        if ticket_id in wanted:
+            abort(422, message="Each ticket can be ticked only once per day.")
+        wanted.append(ticket_id)
         ticket = db.session.get(ItTicket, ticket_id)
         if ticket is None or ticket.user_id != owner.id:
             abort(422, message="You can only link your own IT tickets.")
@@ -792,20 +784,14 @@ def link_record_tickets(record, owner, tickets, *, enforce=True, no_ticket=False
                 abort(422, message="Use No ticket - idle instead of linking that entry.")
         elif ticket.status != "in_progress" and ticket_id not in existing:
             abort(422, message=f"{ticket.jira_key} is resolved; link only open tickets.")
-        total += hours
-    if full and enforce and abs(total - idle) > Decimal("0.01"):
-        abort(422, message=f"Linked ticket hours ({total} h) must add up to the idle hours ({idle} h).")
-    if not full and total > idle + Decimal("0.01"):
-        abort(422, message=f"Linked ticket hours ({total} h) can't exceed the idle hours ({idle} h).")
-    wanted = {item["ticket_id"]: Decimal(str(item["hours"])) for item in tickets}
+    if any(db.session.get(ItTicket, tid).source == NO_TICKET_SOURCE for tid in wanted) and len(wanted) > 1:
+        abort(422, message="Choose either IT tickets or No ticket - idle, not both.")
     for ticket_id, link in list(existing.items()):
         if ticket_id not in wanted:
             db.session.delete(link)
             record.ticket_links.remove(link)
-    for ticket_id, hours in wanted.items():
-        if ticket_id in existing:
-            existing[ticket_id].hours = hours
-        else:
-            db.session.add(ManualRecordTicket(manual_record_id=record.id, ticket_id=ticket_id, hours=hours))
+    for ticket_id in wanted:
+        if ticket_id not in existing:
+            db.session.add(ManualRecordTicket(manual_record_id=record.id, ticket_id=ticket_id))
     db.session.flush()
     remove_unused_no_ticket_entries(owner.id, record.record_date)
