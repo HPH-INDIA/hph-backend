@@ -268,33 +268,49 @@ def _manual(client, day, tickets=None, idle="6", downtime="2", leave="0"):
     return client.post("/api/manual-daily-records", body)
 
 
-def test_full_idle_day_requires_linked_tickets(app, world):
+def test_full_idle_day_requires_ticked_tickets(app, world):
+    """Tickets are reasons for the day's idle time, never a split of its hours."""
     coder = login(app, world["users"]["coder"])
     _, t1 = log_ticket(coder, world, key="VTEC-70")
     _, t2 = log_ticket(coder, world, key="VTEC-71", practice=world["other"])
+    t1, t2 = t1["data"]["id"], t2["data"]["id"]
     day = business_today() - dt.timedelta(days=2)
 
     status, body = _manual(coder, day)
-    assert status == 422 and "link at least one" in body["message"]
-    status, body = _manual(coder, day, [{"ticketId": t1["data"]["id"], "hours": "5"}])
-    assert status == 422 and "add up" in body["message"]
-    status, body = _manual(coder, day, [{"ticketId": t1["data"]["id"], "hours": "5"},
-                                        {"ticketId": t2["data"]["id"], "hours": "3"}])
+    assert status == 422 and "tick at least one" in body["message"]
+    status, body = _manual(coder, day, [{"ticketId": t1}])
+    assert status == 200, body
+    status, body = _manual(coder, day, [{"ticketId": t1}, {"ticketId": t2}])
     assert status == 200, body
     assert sorted(t["jiraKey"] for t in body["data"]["tickets"]) == ["VTEC-70", "VTEC-71"]
+    assert all("hours" not in t for t in body["data"]["tickets"])
     assert ManualRecordTicket.query.count() == 2
+    assert {link.hours for link in ManualRecordTicket.query.all()} == {None}
+    # Still one record for the day, with all 8 idle hours on it.
+    from app.manual_daily_records.models import ManualDailyRecord
+    assert ManualDailyRecord.query.filter_by(user_id=world["users"]["coder"].id, record_date=day).count() == 1
+
+    # Older clients that still send a split are accepted; the split is ignored.
+    status, body = _manual(coder, day, [{"ticketId": t1, "hours": "5"}, {"ticketId": t2, "hours": "1"}])
+    assert status == 200, body
+    assert {link.hours for link in ManualRecordTicket.query.all()} == {None}
+    status, body = _manual(coder, day, [{"ticketId": t1}, {"ticketId": t1}])
+    assert status == 422 and "only once" in body["message"]
 
     # Half-day leave: 4 h available, 4 h idle -> still a full idle day.
     status, body = _manual(coder, day - dt.timedelta(days=1), idle="4", downtime="0", leave="4")
     assert status == 422
-    # Partial idle: optional, but cannot exceed the idle hours.
-    status, _ = _manual(coder, day - dt.timedelta(days=2), [{"ticketId": t1["data"]["id"], "hours": "3"}], idle="2", downtime="0")
-    assert status == 422
-    status, _ = _manual(coder, day - dt.timedelta(days=2), idle="2", downtime="0")
+    # Partial idle: ticking tickets is optional.
+    status, _ = _manual(coder, day - dt.timedelta(days=2), [{"ticketId": t1}], idle="2", downtime="0")
     assert status == 200
+    status, _ = _manual(coder, day - dt.timedelta(days=3), idle="2", downtime="0")
+    assert status == 200
+    # No idle hours: no tickets.
+    status, body = _manual(coder, day - dt.timedelta(days=4), [{"ticketId": t1}], idle="0", downtime="0")
+    assert status == 422 and "idle or downtime" in body["message"]
 
     other = login(app, world["users"]["coder2"])
-    status, body = _manual(other, day, [{"ticketId": t1["data"]["id"], "hours": "8"}])
+    status, body = _manual(other, day, [{"ticketId": t1}])
     assert status == 422 and "own" in body["message"]
 
 
@@ -588,8 +604,9 @@ def test_ticket_import_suggests_and_applies_practice_mappings(app, world):
 
 
 def test_idle_time_lost_to_tickets_by_day_and_week(app, world):
-    """Managers see the idle hours coders linked to tickets: approved records
-    only (pending shown apart), by day or Monday-start week, with filters."""
+    """Managers see the idle hours of days coders ticked tickets on - each day
+    once, from the daily record: approved records only (pending shown apart),
+    by day or Monday-start week, with filters."""
     from app.manual_daily_records.models import ManualDailyRecord
 
     today = business_today()
@@ -600,9 +617,9 @@ def test_idle_time_lost_to_tickets_by_day_and_week(app, world):
     _, t2 = log_ticket(coder, world, key="VTEC-802", practice=world["other"], openedOn=opened)
     _, t3 = log_ticket(coder2, world, key="VTEC-803", openedOn=opened)
     t1, t2, t3 = (t["data"]["id"] for t in (t1, t2, t3))
-    assert _manual(coder, d1, [{"ticketId": t1, "hours": "5"}, {"ticketId": t2, "hours": "3"}])[0] == 200
-    assert _manual(coder, d2, [{"ticketId": t1, "hours": "8"}])[0] == 200
-    assert _manual(coder2, d1, [{"ticketId": t3, "hours": "8"}])[0] == 200      # stays pending
+    assert _manual(coder, d1, [{"ticketId": t1}, {"ticketId": t2}])[0] == 200
+    assert _manual(coder, d2, [{"ticketId": t1}])[0] == 200
+    assert _manual(coder2, d1, [{"ticketId": t3}])[0] == 200      # stays pending
     assert _manual(qa, d1, idle="2", downtime="0")[0] == 200                   # a lead's record is approved on save
     coder_id, qa_id = world["users"]["coder"].id, world["users"]["qa"].id
     ManualDailyRecord.query.filter_by(user_id=coder_id).update({"status": "approved"})
@@ -619,7 +636,7 @@ def test_idle_time_lost_to_tickets_by_day_and_week(app, world):
     assert data["totals"]["days"] == 2 and data["totals"]["byRole"] == {"coder": 16, "qa": 0}
     assert data["pendingHours"] == 8 and data["fullIdleDaysWithoutTicket"] == 1
     assert [(r["periodStart"], r["hours"]) for r in data["rows"]] == [(d1.isoformat(), 8), (d2.isoformat(), 8)]
-    assert data["rows"][0]["topPractice"] == {"id": world["practice"].id, "name": "Lakeview Family Medicine", "hours": 5}
+    assert data["rows"][0]["topPractice"] == {"id": world["practice"].id, "name": "Lakeview Family Medicine", "days": 1}
     week_start = today - dt.timedelta(days=today.weekday())
     assert data["thisWeek"]["hours"] == 8 and data["thisWeek"]["people"] == 1
     assert data["thisMonth"]["hours"] == (16 if d2 >= today.replace(day=1) else 8)
@@ -633,7 +650,8 @@ def test_idle_time_lost_to_tickets_by_day_and_week(app, world):
     qa_view = manager.get(base + "&role=qa")[1]["data"]
     assert qa_view["totals"]["hours"] == 0 and qa_view["pendingHours"] == 0 and qa_view["fullIdleDaysWithoutTicket"] == 1
     assert manager.get(base + "&role=coder")[1]["data"]["fullIdleDaysWithoutTicket"] == 0
-    assert manager.get(base + f"&practiceId={world['other'].id}")[1]["data"]["totals"]["hours"] == 3
+    # A practice filter keeps the whole day that practice blocked - hours are never split by ticket.
+    assert manager.get(base + f"&practiceId={world['other'].id}")[1]["data"]["totals"]["hours"] == 8
 
     assert manager.get(f"/api/it-tickets/idle-time?idleFrom={d1.isoformat()}&idleTo={d2.isoformat()}")[0] == 422
     assert coder.get(base)[0] == 403
@@ -657,13 +675,13 @@ def test_no_ticket_idle_day_creates_a_hidden_generic_entry(app, world):
     # Only for a full idle day, and never together with real tickets.
     assert _manual_no_ticket(coder, day, idle="2", downtime="0")[0] == 422
     _, real = log_ticket(coder, world, key="VTEC-901")
-    status, body = _manual_no_ticket(coder, day, tickets=[{"ticketId": real["data"]["id"], "hours": "8"}])
+    status, body = _manual_no_ticket(coder, day, tickets=[{"ticketId": real["data"]["id"]}])
     assert status == 422 and "not both" in body["message"]
 
     status, body = _manual_no_ticket(coder, day)
     assert status == 200, body
     assert body["data"]["tickets"] == [{"ticketId": body["data"]["tickets"][0]["ticketId"], "jiraKey": key,
-                                        "practiceName": "All practices (no ticket)", "hours": "8.00", "noTicket": True}]
+                                        "practiceName": "All practices (no ticket)", "noTicket": True}]
     entry = ItTicket.query.filter_by(jira_key=key).one()
     assert entry.source == "no_ticket" and entry.status == "resolved" and entry.opened_on == day == entry.resolved_on
     # Saving the same day again reuses the entry.
@@ -680,7 +698,7 @@ def test_no_ticket_idle_day_creates_a_hidden_generic_entry(app, world):
     assert all(p["name"] != "All practices (no ticket)" for p in manager.get("/api/it-tickets/filter-options")[1]["data"]["practices"])
 
     # Switching the day to a real ticket removes the generic entry.
-    status, body = _manual(coder, day, [{"ticketId": real["data"]["id"], "hours": "8"}])
+    status, body = _manual(coder, day, [{"ticketId": real["data"]["id"]}])
     assert status == 200, body
     assert ItTicket.query.filter_by(source="no_ticket").count() == 0
 
@@ -713,7 +731,11 @@ def test_idle_time_shows_no_ticket_idle_hours(app, world):
     assert manager.get(url + "&role=qa")[1]["data"]["totals"]["noTicketHours"] == 0
 
 
-def test_idle_by_coder_lists_tickets_with_idle_hours_by_day_week_and_month(app, world):
+def _name(user):
+    return f"{user.first_name} {user.last_name}"
+
+
+def test_idle_by_coder_is_one_row_per_person_per_day(app, world):
     from app.it_tickets.services import idle_period
     from app.manual_daily_records.models import ManualDailyRecord
 
@@ -724,71 +746,89 @@ def test_idle_by_coder_lists_tickets_with_idle_hours_by_day_week_and_month(app, 
     assert month_start.day == 1 and (month_end + dt.timedelta(days=1)).day == 1
     assert idle_period("month", dt.date(2028, 2, 10)) == (dt.date(2028, 2, 1), dt.date(2028, 2, 29))
 
-    coder, coder2 = login(app, world["users"]["coder"]), login(app, world["users"]["coder2"])
+    users = world["users"]
+    coder, coder2 = login(app, users["coder"]), login(app, users["coder2"])
     other_day = week_start if today != week_start else today + dt.timedelta(days=1)
     opened = (today - dt.timedelta(days=40)).isoformat()
     _, t1 = log_ticket(coder, world, key="VTEC-1101", openedOn=opened)
     _, t2 = log_ticket(coder, world, key="VTEC-1102", practice=world["other"], openedOn=opened)
     t1, t2 = t1["data"]["id"], t2["data"]["id"]
-    assert _manual(coder, today, [{"ticketId": t1, "hours": "5"}, {"ticketId": t2, "hours": "3"}])[0] == 200
+    # Two practices blocked the coder today: still ONE idle row for the day.
+    assert _manual(coder, today, [{"ticketId": t1}, {"ticketId": t2}])[0] == 200
     if other_day <= today:
-        assert _manual(coder, other_day, [{"ticketId": t1, "hours": "8"}])[0] == 200
+        assert _manual(coder, other_day, [{"ticketId": t1}])[0] == 200
     assert _manual_no_ticket(coder2, today)[0] == 200
-    ManualDailyRecord.query.filter_by(user_id=world["users"]["coder"].id).update({"status": "approved"})
+    ManualDailyRecord.query.filter_by(user_id=users["coder"].id).update({"status": "approved"})
     db.session.commit()
 
-    manager = login(app, world["users"]["manager"])
+    manager = login(app, users["manager"])
     base = f"/api/it-tickets/idle-by-coder?on={today.isoformat()}"
     day = manager.get(base + "&period=day")[1]["data"]
     assert (day["fromDate"], day["toDate"]) == (today.isoformat(), today.isoformat())
-    assert [(r["jiraKey"], r["idleHours"], r["idleDays"]) for r in day["rows"]] == [("VTEC-1101", 5, 1), ("VTEC-1102", 3, 1)]
-    assert day["rows"][0]["practiceName"] == "Lakeview Family Medicine" and "canChangeStatus" in day["rows"][0]
-    assert day["noTicket"] == [] and day["pendingHours"] == 8          # coder2's No ticket day is still pending
-    assert day["totals"] == {"ticketHours": 8, "noTicketHours": 0, "people": 1, "tickets": 2}
+    assert [(r["userName"], r["date"], r["idleHours"], r["fullDay"]) for r in day["rows"]] == [
+        (_name(users["coder"]), today.isoformat(), 8, True)]
+    tags = day["rows"][0]["tickets"]
+    assert [(t["jiraKey"], t["practiceName"]) for t in tags] == [
+        ("VTEC-1101", "Lakeview Family Medicine"), ("VTEC-1102", world["other"].name)]
+    assert all("hours" not in t for t in tags) and day["rows"][0]["noTicket"] is False
+    assert day["pendingHours"] == 8          # coder2's No ticket day is still pending
+    assert day["totals"] == {"idleHours": 8, "ticketHours": 8, "noTicketHours": 0, "people": 1, "days": 1, "tickets": 2}
 
-    ManualDailyRecord.query.filter_by(user_id=world["users"]["coder2"].id).update({"status": "approved"})
+    ManualDailyRecord.query.filter_by(user_id=users["coder2"].id).update({"status": "approved"})
     db.session.commit()
     day = manager.get(base + "&period=day")[1]["data"]
-    assert [(r["userName"], r["idleHours"], r["idleDays"]) for r in day["noTicket"]] == [
-        (f'{world["users"]["coder2"].first_name} {world["users"]["coder2"].last_name}', 8, 1)]
-    assert day["totals"]["people"] == 2 and day["pendingHours"] == 0
+    by_name = {r["userName"]: r for r in day["rows"]}
+    assert len(day["rows"]) == 2
+    assert by_name[_name(users["coder2"])]["noTicket"] is True and by_name[_name(users["coder2"])]["tickets"] == []
+    assert day["totals"]["people"] == 2 and day["totals"]["noTicketHours"] == 8 and day["pendingHours"] == 0
 
     week = manager.get(base + "&period=week")[1]["data"]
     assert (week["fromDate"], week["toDate"]) == (week_start.isoformat(), week_end.isoformat())
-    expected = 13 if other_day <= today else 5
-    assert [r["idleHours"] for r in week["rows"] if r["jiraKey"] == "VTEC-1101"] == [expected]
+    coder_days = [r for r in week["rows"] if r["userId"] == users["coder"].id]
+    assert len(coder_days) == (2 if other_day <= today else 1)
     assert manager.get(base + "&period=month")[1]["data"]["fromDate"] == month_start.isoformat()
 
-    # Ticket filters narrow tickets and drop the No ticket lines; person filters keep them.
+    # Ticket filters keep only days with a matching ticket (the whole day, all its tickets).
     filtered = manager.get(base + f"&period=day&practiceId={world['other'].id}")[1]["data"]
-    assert [r["jiraKey"] for r in filtered["rows"]] == ["VTEC-1102"] and filtered["noTicket"] == []
-    only2 = manager.get(base + f"&period=day&userId={world['users']['coder2'].id}")[1]["data"]
-    assert only2["rows"] == [] and len(only2["noTicket"]) == 1
-    assert [r["jiraKey"] for r in manager.get(base + "&period=day&search=1102")[1]["data"]["rows"]] == ["VTEC-1102"]
+    assert [(r["userId"], r["idleHours"], len(r["tickets"])) for r in filtered["rows"]] == [(users["coder"].id, 8, 2)]
+    only2 = manager.get(base + f"&period=day&userId={users['coder2'].id}")[1]["data"]
+    assert [r["userId"] for r in only2["rows"]] == [users["coder2"].id]
+    assert len(manager.get(base + "&period=day&search=1102")[1]["data"]["rows"]) == 1
     assert coder.get(base)[0] == 403
 
 
-def test_idle_by_coder_shows_idle_hours_no_ticket_covers(app, world):
+def test_idle_by_coder_includes_partial_idle_days_without_tickets(app, world):
     from app.manual_daily_records.models import ManualDailyRecord
 
     today = business_today()
-    coder, coder2 = login(app, world["users"]["coder"]), login(app, world["users"]["coder2"])
+    users = world["users"]
+    coder, coder2 = login(app, users["coder"]), login(app, users["coder2"])
     _, ticket = log_ticket(coder, world, key="VTEC-1201")
-    # Partial idle days: coder covers 1 of 3 idle hours with a ticket; coder2 links nothing.
-    assert _manual(coder, today, [{"ticketId": ticket["data"]["id"], "hours": "1"}], idle="2", downtime="1")[0] == 200
+    # Partial idle days: coder ticks a ticket; coder2 ticks nothing.
+    assert _manual(coder, today, [{"ticketId": ticket["data"]["id"]}], idle="2", downtime="1")[0] == 200
     assert _manual(coder2, today, idle="3", downtime="0")[0] == 200
 
-    manager = login(app, world["users"]["manager"])
+    manager = login(app, users["manager"])
     url = f"/api/it-tickets/idle-by-coder?period=day&on={today.isoformat()}"
     data = manager.get(url)[1]["data"]
-    assert data["noTicket"] == [] and data["pendingHours"] == 6      # all 6 idle hours await review
+    assert data["rows"] == [] and data["pendingHours"] == 6      # all 6 idle hours await review
     ManualDailyRecord.query.update({"status": "approved"})
     db.session.commit()
 
     data = manager.get(url)[1]["data"]
-    names = {u.id: f"{u.first_name} {u.last_name}" for u in (world["users"]["coder"], world["users"]["coder2"])}
-    assert [(r["userName"], r["idleHours"], r["idleDays"]) for r in data["noTicket"]] == sorted(
-        [(names[world["users"]["coder"].id], 2, 1), (names[world["users"]["coder2"].id], 3, 1)], key=lambda r: r[0].lower())
-    assert [(r["jiraKey"], r["idleHours"]) for r in data["rows"]] == [("VTEC-1201", 1)]
-    assert data["totals"] == {"ticketHours": 1, "noTicketHours": 5, "people": 2, "tickets": 1}
+    rows = {r["userId"]: r for r in data["rows"]}
+    assert (rows[users["coder"].id]["idleHours"], [t["jiraKey"] for t in rows[users["coder"].id]["tickets"]]) == (3, ["VTEC-1201"])
+    assert (rows[users["coder2"].id]["idleHours"], rows[users["coder2"].id]["tickets"]) == (3, [])
+    assert rows[users["coder2"].id]["noTicket"] is False and rows[users["coder2"].id]["fullDay"] is False
+    assert data["totals"] == {"idleHours": 6, "ticketHours": 3, "noTicketHours": 3, "people": 2, "days": 2, "tickets": 1}
     assert data["pendingHours"] == 0
+
+
+def test_ticket_reports_count_linked_days_not_hours(app, world):
+    coder = login(app, world["users"]["coder"])
+    _, t1 = log_ticket(coder, world, key="VTEC-1301")
+    day = business_today()
+    assert _manual(coder, day, [{"ticketId": t1["data"]["id"]}])[0] == 200
+    assert _manual(coder, day - dt.timedelta(days=1), [{"ticketId": t1["data"]["id"]}])[0] == 200
+    detail = coder.get(f"/api/it-tickets/{t1['data']['id']}")[1]["data"]
+    assert detail["linkedIdleDays"] == 2 and "linkedIdleHours" not in detail
